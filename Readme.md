@@ -72,3 +72,12 @@ extracting multiple levels, and copying roms to the appropriate locations.
 * Logging
 * RetroPie controller, configuration, and theme management
 * Backup and restore retropie
+
+### DMCA Concerns
+
+According to Archive.org, regulations have been altered to enable archiving of
+retro gaming consoles and other out of production hardware and software. Any
+links within this repository are intended to follow the same guidelines as
+such other sites have found to be acceptable. Additionally, all defaults are set
+to NOT download. If you or your organization have issues with the included
+material, please contact me directly.

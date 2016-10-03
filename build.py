@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 
-import sys, os, re
-import subprocess
+import sys, os, re, time
+import subprocess, ctypes
 import tarfile, shutil, zipfile, lzma, gzip
-import argparse, json, magic
+import argparse, json, magic, logging
 import urllib.request, hashlib
 
 VERSION = "0.0.1"
+
+# bitflags for command line opts
+EF_NO_FLAGS = 0
+EF_PARSE_CONFIG = 1
+EF_IMAGE_SDCARD = 2
+EF_INSTALL_ROMS = 4
+EF_MAX_FLAGS = 255
 
 # commented lines are for notation, handled within __init__()'s
 sdcard = "/dev/sdc"
 #sdcard_boot = sdcard+"1"
 #sdcard_dev = sdcard+"2"
-sdcard_fs = "ext3"
+sdcard_fs = "ext4"
 tmp_d = "/tmp/rpi-tmp"
 rpi_root = "/mnt/rpi"
 #rpi_boot = rpi_root + "/boot"
@@ -20,71 +27,159 @@ base_img = tmp_d + "/retropie.img"
 #base_gz = base_img + ".gz"
 tmp_dir = [rpi_root, tmp_d]
 
+# regular expressions
+RE_DEV_BASE = re.compile("(?<=/dev/)\w+") # SdCard::{rescan_drive,resize_drive}
+RE_COMPRESSED = re.compile('\/(?P<cmp>[^\/]+)$') # Download::get_emulators()
+RE_EXTRACTED = re.compile('(?P<ext>[^\.]+)\.[^\.]+$') # Download::get_emulators()
+
 class SdCard():
-  def __init__(self, dev=sdcard, mount=rpi_root, fs=sdcard_fs, dirs=tmp_dir):
+  """
+  SdCard stores paths and details about the raw sd card and mount points used for writing the retropie image and roms.
+  """
+  def __init__(self, dev=sdcard, mount=rpi_root, fs=sdcard_fs, dir=tmp_dir):
+    """
+    Constructs a new SdCard object.
+    Fairly linux specific, root/boot setting will need to be altered for windows at least.
+    
+    :param dev: Base device path, /dev/sdb, E:\.
+    :param mount: Root mount point for sdcards second partition.
+    :param fs: Filesystem type of image being written, not entirely necessary.
+    :param dir: Temporary directory for downloading and extracting images.
+    """
     self.dev = dev
     self.dev_boot = self.dev+"1"
     self.dev_root = self.dev+"2"
     self.mount_root = mount
     self.mount_boot = self.mount_root+"/boot"
     self.fs = fs
-    self.tmp_dir = dirs
+    self.tmp_dir = dir
     self.is_raw_dev = True
     self.is_root_mounted = False
   
   def rescan_drive(self):
-    sdx=re.search("(?<=/dev/)\w+", self.dev).group(0)
-    with open("/sys/block/" + sdx + "/device/rescan", "w+") as rescan:
-      rescan.write("1")
+    """
+    Issues operating system specific commands to rescan partitions after writig of image or resize.
+    Linux specific, needs windows/osx.
+    """
+    logging.info("Rescanning drive")
+    sdx=RE_DEV_BASE.search(self.dev).group(0)
+    path="/sys/block/" + sdx + "/device/rescan"
+    print(sdx)
+    while not os.path.exists(path):
+      time.sleep(1)
+    try:
+      with open(path, "w+") as rescan:
+        rescan.write("1")
+    except PermissionError:
+      logging.error("Failed to write rescan on {}".format(sdx))
+      pass
   
-  def mount(self, options=''):
-    ret = ctypes.CDLL('libc.so.6', use_errno=True).mount(self.dev_root, self.mount_root, self.fs, 0, options)
-    if ret < 0:
-      errno = ctypes.get_errno()
-      raise RuntimeError("Error mounting {} ({}) on {} with options '{}': {}"
-        .format(self.dev_root, self.fs, self.mount_root, options, os.strerror(errno)))
+  def mount(self):
+    """
+    Uses internal values to mount root and boot partitions of sdcard.
+    Linux specific, needs windows/osx.
+    """
+    logging.info("Mounting sdcard")
+    logging.debug("Mounting {} to {}".format(self.dev_root,self.mount_root))
+    subprocess.run("mount "+self.dev_root+" "+self.mount_root, shell=True, check=True)
+    logging.debug("Mounting {} to {}".format(self.dev_boot,self.mount_boot))
+    subprocess.run("mount "+self.dev_boot+" "+self.mount_boot, shell=True, check=True)
 
   def umount(self):
-    ret = ctypes.CDLL('libc.so.6', use_errno=True).umount(self.mount_root)
-    if ret < 0:
-      errno = ctypes.get_errno()
-      raise RuntimeError("Error umounting {}: {}".format(self.mount_root, os.strerror(errno)))
+    """
+    Uses interal values to unmount root and boot partitions of sdcard.
+    Linux specific, needs windows/osx.
+    """
+    logging.info("Unmounting sdcard")
+    logging.debug("Umounting {} from {}".format(self.dev_boot,self.mount_boot))
+    subprocess.run("umount "+self.mount_boot, shell=True, check=True)
+    logging.debug("Umounting {} to {}".format(self.dev_root,self.mount_root))
+    subprocess.run("umount "+self.mount_root, shell=True, check=True)
 
   def resize_drive(self):
+    """
+    Resizes second partition to full size of remaining sdcard.
+    Linux specific, needs windows/osx
+    """
+    logging.info("Resizing drive")
     d_size=0
-    sdx=re.search("(?<=/dev/)\w+", self.dev_root).group(0)
-    with open("/sys/block/" + sdx + "/size", "r") as f:
-      d_size=f.read()
-    # resize disk
-    subprocess.run("parted -m /dev/" + sdx + " u s resizepart /dev/" + sdx + "2 " + str(d_size-1), shell=True, check=True)
+    sdx=RE_DEV_BASE.search(self.dev).group(0)
+    s_path="/sys/block/"+sdx+"/size"
+    while not os.path.exists(s_path):
+      time.sleep(1)
+    with open(s_path, "r") as f:
+      d_size=int(f.read())
+    subprocess.run("parted -m "+self.dev+" u s resizepart 2 "+str(d_size-1), shell=True, check=True)
   
   def write_img(self, img=base_img):
+    """
+    Block level write of img to self.dev. Needs to be rescanned and resized prior to rom addition.
+    Works on windows and linux, needs osx testing but should work.
+    
+    :param img: Path to image for writing to sdcard.
+    """
+    logging.info("Writing image")
     with open(img, "rb") as in_file:
       with open(self.dev, "w+b") as out_file:
         out_file.write(in_file.read())
   
-  def mk_dirs(self):
+  def _mk_dir(self, path):
+    """
+    Internal general creation of directory function.
+    Works on linux, should be agnostic. TEST
+    
+    :param path: Path to temporary directory for extraction and storage.
+    """
+    logging.info("Making {} dir".format(path))
     try:
-      os.makedirs(self.tmp_dir)
+      os.makedirs(path)
     except FileExistsError as e:
-      if os.path.isdir(self.tmp_dir) and os.access(self.tmp_dir, os.R_OK|os.W_OK):
+      if os.path.isdir(path) and os.access(path, os.R_OK|os.W_OK):
         pass
     except OSError as e:	# Python >2.5
-      if e.errno == errno.EEXIST and os.path.isdir(self.tmp_dir):
+      if e.errno == errno.EEXIST and os.path.isdir(path):
         pass
       else:
         raise RuntimeError("Failed to create temp dir {}.".format(path))
+  
+  def mk_dirs(self):
+    """
+    Creates temp and root mount point directories if not already created. Leverages self._mk_dir().
+    Works on linux, should be cross compat. TEST
+    """
+    self._mk_dir(self.tmp_dir)
+    self._mk_dir(self.mount_root)
 
   def rm_dirs(self):
+    """
+    Removes dirs created with self.mk_dirs()
+    Works on linux, should be cross compat. TEST
+    """
+    logging.info("Removing temp dir")
     for path in self.tmp_dir:
       try:
         os.rmdir(path)
       except OSError as e:	# Python >2.5
-        print("Failed to remove temp dir {}.".format(path))
+        logging.error("Failed to remove temp dir {}.".format(path))
         pass
 
 class Download():
-  def __init__(self, uri=None, compressed="file.gz", extracted="file/", rm_extracted=False, md5="", file_order=[]):
+  '''
+  Download objects are used to track a single file from download through multiple levels of extraction. Depending on options set, they may leverage previously downloaded or extracted files. While not explicitly necessary, Download objects are expected to be extracted at least once prior to checking for rom extensions and copying to the sdcard.
+  
+  Once recursively extracted a tree of Download objects should exist within self.inner_files. Leaves should have self.extracted set to a single file or directory. They are files which either match the self.file_order expressions, or are unable to be decompressed further. Branches will have further Download objects listed within inner_Files, although they may only have been extracted and not downloaded directly. Branches are either the top level compressed file or each compressed file extracted from a previous layer of compressed Download objects.
+  '''
+  def __init__(self, uri=None, compressed=None, extracted=None, rm_extracted=False, md5=None, file_order=[]):
+    '''
+    Initializes a Download object
+    
+    :param uri: Uri, presently only https(s), from which to download the file.
+    :param compressed: Filename of compressed file, used when downloading and extracting files from this archive, and while being extracted from parent archives.
+    :param extracted: Filename of extracted file, should only be set if you know this is a single step extraction, or when self.extractall() finds a leaf object, indicating it can no longer be extracted further.
+    :param rm_extraced: Inidicator if self.compressed should be removed once all files are extracted.
+    :param md5: String used to ensure file integrity. Should be used with downloaded files and can be used with extracted files to avoid extracting them a second time.
+    :param file_order: Array of compiled regular expressions used to check if files extracted from this object are leaf or branch types.
+    '''
     self.uri = uri
     self.compressed = compressed
     self.extracted = extracted
@@ -94,8 +189,13 @@ class Download():
     self.md5 = md5
     
   def download(self, path):
+    '''
+    Downloads self.uri into path+self.compressed, or path+basename(self.uri)
+    
+    :param path: Path to temporary directory for extraction and storage.
+    '''
     # Download the file from `url` and save it locally under `file_name`:
-    print(self.uri)
+    logging.info("Downloading file: {} from: {}".format(self.compressed,self.uri))
     if os.access(path+self.compressed, mode=4) and self.md5 is not None:
       md5 = hashlib.md5(open(path+self.compressed, "rb").read()).hexdigest()
       if md5 == self.md5:
@@ -103,17 +203,40 @@ class Download():
     # no existing file, or not matching sum
     with urllib.request.urlopen(self.uri, timeout=300) as response, open(path+self.compressed, 'wb') as out_file:
       shutil.copyfileobj(response, out_file)
+  
+  def is_rom(self, f_name=""):
+    '''
+    Checks f_name for matches of self.extensions
+    
+    :param f_name: Filename string to be matched against
+    :returns bool: Result of matching
+    '''
+    for ext in self.extensions:
+      if ext.match(f_name) is not None:
+        return True
+    return False
 
-  def untar(self, path):
-    print(path+self.compressed)
+  def untar(self, member, path):
+    '''
+    Untars member from self.compressed to path+member.
+    
+    :param member: Name of object within self.compressed to be extracted and written to as path+this
+    :param path: Path to temporary directory for extraction and storage.
+    '''
+    logging.info("Untar file: {} to: {}".format(path+self.compessed,path+self.extracted))
     with tarfile.open(path+self.compressed) as tar:
-      for member in tar.getmembers():
-        if not member.is_dir() and not member.is_file():
-          pass
-        self.inner_files.append(member)
-      tar.extractall(path=path+self.extracted, members=self.inner_files)
+      with tar.extractfile(member) as xtar, open(path+member, 'w+') as fout:
+        fout.write(xtar.read())
   
   def unzip(self, path):
+    '''
+    Presently extracts all members of a zip to path.
+    Should extract a given member from self being a zip to path.
+    
+    :param member: Name of object within self.compressed to be extracted and written to as path+this
+    :param path: Path to temporary directory for extraction and storage.
+    '''
+    logging.info("Unzip file: {} to: {}".format(path+self.compessed,path+self.extracted))
     filelist = []
     with zipfile.ZipFile(self.compressed) as zf:
       filelist = zf.infolist()
@@ -135,46 +258,111 @@ class Download():
     self.inner_files = filelist
   
   def unlzma(self, path):
+    '''
+    Currently, treats self.compressed as though it has a single file within and writes to self.path.
+    Should be, reads self.compressed for member writing to path+member
+    
+    :param member: Name of object within self.compressed to be extracted and written to as path+this
+    :param path: Path to temporary directory for extraction and storage.
+    '''
+    logging.info("Unlzma file: {} to: {}".format(path+self.compessed,path+self.extracted))
     cpath=path+self.compressed
     epath=path+self.extracted
     with lzma.open(cpath) as fin, open(epath, 'wb') as fout:
       fout.write(fin.read())
   
-  def ungz(self, path):
-    cpath=path+self.compressed
-    epath=path+self.extracted
+  def ungz(self, member, path):
+    '''
+    Gzip decompresses self.compressed for internal object using member as path for finding and writing output.
+    
+    :param member: Name of object within self.compressed to be extracted and written to as path+this
+    :param path: Path to temporary directory for extraction and storage.
+    '''
+    logging.info("Ungz file: {} to: {}".format(path+self.compressed,path+member))
+    cpath=path+member
+    epath=path+member
     with gzip.open(cpath, 'rb') as fin, open(epath, 'wb') as fout:
       fout.write(fin.read())
   
-  def decompress(self, path):
+  def decompress(self, member, path):
+    """
+    Decompress a single file from self into a temporary path
+    plus compressed name. Presently works with any combination
+    of: tar, gzip, xz, and zip files. 7zip soon...
+    
+    :param member: Name of object within self.compressed to be extracted and written to as path+this
+    :param path: Path to temporary directory for extraction and storage.
+    """
+    logging.info("Starting magic based decompression")
     base = "application/"
     ty = ""
     with magic.Magic(flags=magic.MAGIC_MIME_TYPE) as m:
-      ty = m.id_filename(path+self.compressed)
-    if ty == base+'x-tar':
-      print("found tar, attempting to untar")
-      self.untar(path)
-    elif ty == base+'x-gzip':
-      print("found gzip, attempting to untar")
-      self.ungz(path)
-    elif ty == base+'x-xz':
-      print("found xz, do something with me!")
-      self.unlzma(path)
-    elif ty == base+'x-bzip2':
-      print("found bz2, do something with me!")
-      self.unlzma(path)
-    elif ty == base+'x-7z-compressed':
-      print("found 7z, do something with me!")
-    elif ty == base+'zip':
-      print("found zip, attempting to unzip")
-      self.unzip(path)
+      ty = m.id_filename(path+member)
+    sw = {
+      base+'x-tar': self.untar,
+      base+'x-gzip': self.ungz,
+      base+'x-xz': self.unlzma,
+      base+'x-7z-compressed': None,
+      base+'zip': self.unzip
+    }
+    if ty in sw.keys():
+      fn = sw.get(ty)
+      fn(member, path)
     else:
-      print("found unknown type: {} for file: {}".format(ty, path+self.compressed))
-    self.is_extracted = True
-    self.extracted = path+self.extracted
+      logging.info("found unknown type: {} for file: {}".format(ty, path+member))
+  
+  def decompress_all(self, path):
+    """
+    Takes a download object and processes as needed.
+    We build an object tree using objects with an extracted
+    path set to indicate final rom files vs without being
+    files of a further compressed file. the list of files
+    contained within this parent is stored as a list of
+    inner object types within the self.inner_objects.
+    Once rom vs rar is determined, recurse if needed. After
+    this the inner_files can of self can be walked for a
+    file tree.
+    
+    :param path: Path to temporary directory for extraction and storage.
+    """
+    
+    # get list of inner files for parsing
+    list_t = self.get_inner_files() #todo
+    # parse list of files into roms and compressed files, after this extraction
+    rom_list = [file_t for file_t in list_t if self.is_rom(file_t)]
+    rar_list = [file_t for file_t in list_t if not self.is_rom(file_t)]
+    # append roms list and rar list to inner_files. use self.extracted to determine extract method
+    self.inner_files.append(
+      Download(
+        compressed=rom,
+        extracted=path+rom,
+        rm_extracted=self.rm
+      ) for rom in rom_list)
+    self.inner_files.append(
+      Download(
+        compressed=rar,
+        file_order=self.file_order,
+        rm_extracted=self.rm
+      ) for rar in rar_list)
+    # cycle through list of files within this compressed file and extract and continue building tree if needed
+    for i_f in self.inner_files:
+      self.decompress(i_f.compressed_path, path)
+      if i_f.extracted is None: # have final file we want
+        i_f.decompress_all(path)
+    if self.rm:
+      self.delete(path)
+    
 
 class Config():
+  '''
+  Config objects read the configuration provided by command line arguments and store json representations of other objects here. As needed the sdcard(SdCard), retropie(Download), and emulators(list(Download)) objects can be created. If manipulation or alteration of these base initializations is needed, it should be done either with the read configuration or after generation of object.
+  '''
   def __init__(self, path=None):
+    '''
+    Initializes a Config object from the file provided byt path.
+    
+    :params path: Path to configuration file
+    '''
     if path is None:
       raise ValueError("Must provide path to config objects.")
     self.path = path
@@ -185,8 +373,14 @@ class Config():
     self.emulators = self.json.get("emulators")
   
   def get_sdcard(self, args):
+    '''
+    Generates an SdCard object from internal jsons objects. Allows cli args to override config, if provided.
+    
+    :params args: Argument structure provided buy parse_args().
+    '''
     sdcard = SdCard(dev=self.sdcard.get("dev_path"),
-      mount=self.sdcard.get("mount_path"), dirs=self.sdcard.get("temp_path"))
+      mount=self.sdcard.get("mount_path"), fs=self.sdcard.get("filesystem"),
+      dirs=self.sdcard.get("temp_path"))
     if args.sdcard is "" and 0 < len(args.sdcard) and len(args.sdcard) <= 255:
       sdcard.dev = args.sdcard
       sdcard.dev_boot = args.sdcard+"1"
@@ -199,6 +393,9 @@ class Config():
     return sdcard
   
   def get_retropie(self):
+    '''
+    Generates a Download object with for retropie image use. Specifically it sets extracted and compressed so we know it's a single extraction and the wanted output file.
+    '''
     return Download(
       uri=self.retropie.get("uri"),
       compressed=self.retropie.get("compressed_path"),
@@ -206,22 +403,29 @@ class Config():
       md5=self.retropie.get("md5"),
       rm_extracted=True )
   
-  def get_emulators(self, path):
+  def get_emulators(self):
+    '''
+    Generates a list of Download objects, set such that they will search internally and build the inner_files tree as needed.
+    '''
+    logging.debug("Entered get_emulators() with path: {}".format(path))
     emulators = []
-    cmp_re = re.compile('\/(?P<cmp>[^\/]+)$')
-    ext_re = re.compile('(?P<ext>[^\.]+)\.[^\.]+$')
     for name, settings in self.emulators.items():
       if settings.get("cp_to_sd") == True:
-        cmp = cmp_re.match(settings.get("rom_uris")).group("cmp")
-        ext = ext_re.match(cmp).group("ext")
+        logging.debug("rom_uris: {} sub_cmp: ".format(settings.get("rom_uris")))
+        cmp = RE_COMPRESSED.match(settings.get("rom_uris")).group("cmp") # not working with arrays of uris, also how to handle them...
+        f_o = [ re.compile('.+\.'+ext+'$') for ext in settings.get("extensions") ]
         emulators.append(Download(
                       uri=settings.get("rom_uris"),
                       compressed=cmp,
-                      extracted=path+ext,
                       get_all=settings.get("dl_all_b4_extract"),
-                      file_order = settings.get("extensions")))
+                      file_order=f_o))
 
 def parse_args(args=None):
+  '''
+  Parse commandline arguments. Natively handles help. Commandline arguments superscede config options.
+  
+  :param args: Argv
+  '''
   parser = argparse.ArgumentParser(description="RetroPie Image Builder {}".format(VERSION))
   parser.add_argument("-c", "--config", type=str, required=True, help="Path to configuration file.")
   parser.add_argument("-s", "--sdcard", type=str, required=False, help="Path to sdcard device.")
@@ -229,39 +433,94 @@ def parse_args(args=None):
   parser.add_argument("-t", "--temp", type=str, required=False,
     help="Path to temporary directory for downloads and extraction")
   parser.add_argument("-v", "--verbose", action="count", required=False, help="Verbose output.")
+  parser.add_argument("--parse-config", action="count", required=False, help="total_options+=parse config only")
+  parser.add_argument("--image-sdcard", action="count", required=False, help="total_options+=download, extract, and image retropie onto sdcard")
+  parser.add_argument("--install-roms", action="count", required=False, help="total_options+=download, extract and cp roms, mount and unmount sdcard")
   args = parser.parse_args(args)
   
   if not args.config:
     print("Please specify a configuration file")
     print_help(1)
+  
+  execute_flag = EF_NO_FLAGS
+  if args.parse-config and 0 <= args.parse-config:
+    execute_flag &= EF_PARSE_CONFIG
+  if args.image-sdcard and 0 <= args.image-sdcard:
+    execute_flag &= EF_IMAGE_SDCARD
+  if args.install-roms and 0 <= args.install-roms:
+    execute_flag &= EF_INSTALL_ROMS
+  if execute_flag == EF_NO_FLAGS:
+    execute_flag = EF_MAX_FLAGS # way more than any unique flags we would need... hopefully
+  logging.debug("Generated execute flag: {}".format(execute_flag))
+  args.e_flag = execute_flag
+  
   return args
 
 def main(argv):
-  args = parse_args(argv)
-  config = Config(args.config)
-  sdcard = config.get_sdcard(args)
-  retropie = config.get_retropie()
-  emulators = config.get_emulators(sdcard.tmp_dir)
-  sdcard.mk_dirs()
-  retropie.download(sdcard.tmp_dir)
-  retropie.decompress(sdcard.tmp_dir)
-  sdcard.write_img(retropie.extracted)
-  todo = '''
-  sdcard.rescan_drive()
-  sdcard.resize_drive()
-  sdcard.rescan_drive()
-  sdcard.mount()
-  for each emulator:
-    emulator.download()
-    emulator.extract()
-    emulator.cp_final_to_sd()
-  sdcard.unmount()
+  '''
+  Execute as arguments indicated by cli.
   
-  later:
-    handle errors
+  :param argv: sys.argv array for parsing.
+  '''
+  args = parse_args(argv)
+  if args.verbose:
+    print("got verbose {}", args.verbose)
+    sw = {
+      0: logging.NOTSET,
+      1: logging.INFO,
+      2: logging.CRITICAL,
+    }
+    args.verbose = args.verbose if args.verbose <= 2 else 2
+    logging.basicConfig(level=sw.get(args.verbose),
+                      format='%(levelname)-8s %(message)s',
+                      datefmt='%m-%d %H:%M')
+  
+  if (args.e_flag & EF_PARSE_CONFIG) == EF_PARSE_CONFIG:
+    config = Config(args.config)
+    sdcard = config.get_sdcard(args)
+    retropie = config.get_retropie()
+    emulators = config.get_emulators(sdcard.tmp_dir)
+  if (args.e_flag & EF_IMAGE_SDCARD) == EF_IMAGE_SDCARD:
+    sdcard.mk_dirs(sdcard.tmp_dir)
+    retropie.download(sdcard.tmp_dir)
+    retropie.decompress(sdcard.tmp_dir)
+    sdcard.write_img(retropie.extracted)
+    
+    try:
+      sdcard.rescan_drive()
+    except PermissionError as e:
+      logging.ERROR("Rescan error, sleeping 5s")
+      time.sleep(5)
+    
+    try:
+      sdcard.resize_drive()
+    except PermissionError as e:
+      logging.ERROR("Resize error, exiting: {}".format(e))
+      return 1
+  
+  if (args.e_flag & EF_INSTALL_ROMS) == EF_INSTALL_ROMS:
+    try:
+      sdcard.mount()
+    except RuntimeError as e:
+      print(e)
+      return 1
+    
+    for emulator in emulators:
+      emulator.download()
+      emulator.decompress()
+      emulator.cp_to_sd()
+    
+    sdcard.unmount()
+  
+  later = """
+    handle more errors
     verify osx pathing and drives
     backup/restore of controllers and saves
-  '''
+  """
 
+'''
+Are we actually in main? If so, someone called us directly and we should process as such...
+'''
 if __name__ == "__main__":
-  main(sys.argv[1:])
+  exit_code = main(sys.argv[1:])
+  sys.exit(exit_code)

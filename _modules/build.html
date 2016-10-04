@@ -1,0 +1,612 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>build &#8212; RetroPie-Builder 0.0.0 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/alabaster.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '0.0.0',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="RetroPie-Builder 0.0.0 documentation" href="../index.html" />
+    <link rel="up" title="Module code" href="index.html" />
+   
+  <link rel="stylesheet" href="../_static/custom.css" type="text/css" />
+  
+  
+  <meta name="viewport" content="width=device-width, initial-scale=0.9, maximum-scale=0.9" />
+
+  </head>
+  <body role="document">
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for build</h1><div class="highlight"><pre>
+<span></span><span class="ch">#!/usr/bin/env python3</span>
+
+<span class="kn">import</span> <span class="nn">sys</span><span class="o">,</span> <span class="nn">os</span><span class="o">,</span> <span class="nn">re</span><span class="o">,</span> <span class="nn">time</span>
+<span class="kn">import</span> <span class="nn">subprocess</span><span class="o">,</span> <span class="nn">ctypes</span>
+<span class="kn">import</span> <span class="nn">tarfile</span><span class="o">,</span> <span class="nn">shutil</span><span class="o">,</span> <span class="nn">zipfile</span><span class="o">,</span> <span class="nn">lzma</span><span class="o">,</span> <span class="nn">gzip</span>
+<span class="kn">import</span> <span class="nn">argparse</span><span class="o">,</span> <span class="nn">json</span><span class="o">,</span> <span class="nn">magic</span><span class="o">,</span> <span class="nn">logging</span>
+<span class="kn">import</span> <span class="nn">urllib.request</span><span class="o">,</span> <span class="nn">hashlib</span>
+
+<span class="n">VERSION</span> <span class="o">=</span> <span class="s2">&quot;0.0.1&quot;</span>
+
+<span class="c1"># bitflags for command line opts</span>
+<span class="n">EF_NO_FLAGS</span> <span class="o">=</span> <span class="mi">0</span>
+<span class="n">EF_PARSE_CONFIG</span> <span class="o">=</span> <span class="mi">1</span>
+<span class="n">EF_IMAGE_SDCARD</span> <span class="o">=</span> <span class="mi">2</span>
+<span class="n">EF_INSTALL_ROMS</span> <span class="o">=</span> <span class="mi">4</span>
+<span class="n">EF_MAX_FLAGS</span> <span class="o">=</span> <span class="mi">255</span>
+
+<span class="c1"># commented lines are for notation, handled within __init__()&#39;s</span>
+<span class="n">sdcard</span> <span class="o">=</span> <span class="s2">&quot;/dev/sdc&quot;</span>
+<span class="c1">#sdcard_boot = sdcard+&quot;1&quot;</span>
+<span class="c1">#sdcard_dev = sdcard+&quot;2&quot;</span>
+<span class="n">sdcard_fs</span> <span class="o">=</span> <span class="s2">&quot;ext4&quot;</span>
+<span class="n">tmp_d</span> <span class="o">=</span> <span class="s2">&quot;/tmp/rpi-tmp&quot;</span>
+<span class="n">rpi_root</span> <span class="o">=</span> <span class="s2">&quot;/mnt/rpi&quot;</span>
+<span class="c1">#rpi_boot = rpi_root + &quot;/boot&quot;</span>
+<span class="n">base_img</span> <span class="o">=</span> <span class="n">tmp_d</span> <span class="o">+</span> <span class="s2">&quot;/retropie.img&quot;</span>
+<span class="c1">#base_gz = base_img + &quot;.gz&quot;</span>
+<span class="n">tmp_dir</span> <span class="o">=</span> <span class="p">[</span><span class="n">rpi_root</span><span class="p">,</span> <span class="n">tmp_d</span><span class="p">]</span>
+
+<span class="c1"># regular expressions</span>
+<span class="n">RE_DEV_BASE</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="s2">&quot;(?&lt;=/dev/)\w+&quot;</span><span class="p">)</span> <span class="c1"># SdCard::{rescan_drive,resize_drive}</span>
+<span class="n">RE_COMPRESSED</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="s1">&#39;\/(?P&lt;cmp&gt;[^\/]+)$&#39;</span><span class="p">)</span> <span class="c1"># Download::get_emulators()</span>
+<span class="n">RE_EXTRACTED</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="s1">&#39;(?P&lt;ext&gt;[^\.]+)\.[^\.]+$&#39;</span><span class="p">)</span> <span class="c1"># Download::get_emulators()</span>
+
+<div class="viewcode-block" id="SdCard"><a class="viewcode-back" href="../build.html#build.SdCard">[docs]</a><span class="k">class</span> <span class="nc">SdCard</span><span class="p">():</span>
+  <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">  SdCard stores paths and details about the raw sd card and mount points used for writing the retropie image and roms.</span>
+<span class="sd">  &quot;&quot;&quot;</span>
+  <span class="k">def</span> <span class="nf">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dev</span><span class="o">=</span><span class="n">sdcard</span><span class="p">,</span> <span class="n">mount</span><span class="o">=</span><span class="n">rpi_root</span><span class="p">,</span> <span class="n">fs</span><span class="o">=</span><span class="n">sdcard_fs</span><span class="p">,</span> <span class="nb">dir</span><span class="o">=</span><span class="n">tmp_dir</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Constructs a new SdCard object.</span>
+<span class="sd">    Fairly linux specific, root/boot setting will need to be altered for windows at least.</span>
+<span class="sd">    </span>
+<span class="sd">    :param dev: Base device path, /dev/sdb, E:\.</span>
+<span class="sd">    :param mount: Root mount point for sdcards second partition.</span>
+<span class="sd">    :param fs: Filesystem type of image being written, not entirely necessary.</span>
+<span class="sd">    :param dir: Temporary directory for downloading and extracting images.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">dev</span> <span class="o">=</span> <span class="n">dev</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">dev_boot</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">dev</span><span class="o">+</span><span class="s2">&quot;1&quot;</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">dev_root</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">dev</span><span class="o">+</span><span class="s2">&quot;2&quot;</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">mount_root</span> <span class="o">=</span> <span class="n">mount</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">mount_boot</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mount_root</span><span class="o">+</span><span class="s2">&quot;/boot&quot;</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">fs</span> <span class="o">=</span> <span class="n">fs</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">tmp_dir</span> <span class="o">=</span> <span class="nb">dir</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">is_raw_dev</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">is_root_mounted</span> <span class="o">=</span> <span class="kc">False</span>
+  
+<div class="viewcode-block" id="SdCard.rescan_drive"><a class="viewcode-back" href="../build.html#build.SdCard.rescan_drive">[docs]</a>  <span class="k">def</span> <span class="nf">rescan_drive</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Issues operating system specific commands to rescan partitions after writig of image or resize.</span>
+<span class="sd">    Linux specific, needs windows/osx.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Rescanning drive&quot;</span><span class="p">)</span>
+    <span class="n">sdx</span><span class="o">=</span><span class="n">RE_DEV_BASE</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dev</span><span class="p">)</span><span class="o">.</span><span class="n">group</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">path</span><span class="o">=</span><span class="s2">&quot;/sys/block/&quot;</span> <span class="o">+</span> <span class="n">sdx</span> <span class="o">+</span> <span class="s2">&quot;/device/rescan&quot;</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">sdx</span><span class="p">)</span>
+    <span class="k">while</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
+      <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+      <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s2">&quot;w+&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">rescan</span><span class="p">:</span>
+        <span class="n">rescan</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;1&quot;</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">PermissionError</span><span class="p">:</span>
+      <span class="n">logging</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="s2">&quot;Failed to write rescan on </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">sdx</span><span class="p">))</span>
+      <span class="k">pass</span></div>
+  
+<div class="viewcode-block" id="SdCard.mount"><a class="viewcode-back" href="../build.html#build.SdCard.mount">[docs]</a>  <span class="k">def</span> <span class="nf">mount</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Uses internal values to mount root and boot partitions of sdcard.</span>
+<span class="sd">    Linux specific, needs windows/osx.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Mounting sdcard&quot;</span><span class="p">)</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Mounting </span><span class="si">{}</span><span class="s2"> to </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dev_root</span><span class="p">,</span><span class="bp">self</span><span class="o">.</span><span class="n">mount_root</span><span class="p">))</span>
+    <span class="n">subprocess</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;mount &quot;</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">dev_root</span><span class="o">+</span><span class="s2">&quot; &quot;</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">mount_root</span><span class="p">,</span> <span class="n">shell</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">check</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Mounting </span><span class="si">{}</span><span class="s2"> to </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dev_boot</span><span class="p">,</span><span class="bp">self</span><span class="o">.</span><span class="n">mount_boot</span><span class="p">))</span>
+    <span class="n">subprocess</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;mount &quot;</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">dev_boot</span><span class="o">+</span><span class="s2">&quot; &quot;</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">mount_boot</span><span class="p">,</span> <span class="n">shell</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">check</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="SdCard.umount"><a class="viewcode-back" href="../build.html#build.SdCard.umount">[docs]</a>  <span class="k">def</span> <span class="nf">umount</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Uses interal values to unmount root and boot partitions of sdcard.</span>
+<span class="sd">    Linux specific, needs windows/osx.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Unmounting sdcard&quot;</span><span class="p">)</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Umounting </span><span class="si">{}</span><span class="s2"> from </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dev_boot</span><span class="p">,</span><span class="bp">self</span><span class="o">.</span><span class="n">mount_boot</span><span class="p">))</span>
+    <span class="n">subprocess</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;umount &quot;</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">mount_boot</span><span class="p">,</span> <span class="n">shell</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">check</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Umounting </span><span class="si">{}</span><span class="s2"> to </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dev_root</span><span class="p">,</span><span class="bp">self</span><span class="o">.</span><span class="n">mount_root</span><span class="p">))</span>
+    <span class="n">subprocess</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;umount &quot;</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">mount_root</span><span class="p">,</span> <span class="n">shell</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">check</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="SdCard.resize_drive"><a class="viewcode-back" href="../build.html#build.SdCard.resize_drive">[docs]</a>  <span class="k">def</span> <span class="nf">resize_drive</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Resizes second partition to full size of remaining sdcard.</span>
+<span class="sd">    Linux specific, needs windows/osx</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Resizing drive&quot;</span><span class="p">)</span>
+    <span class="n">d_size</span><span class="o">=</span><span class="mi">0</span>
+    <span class="n">sdx</span><span class="o">=</span><span class="n">RE_DEV_BASE</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dev</span><span class="p">)</span><span class="o">.</span><span class="n">group</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">s_path</span><span class="o">=</span><span class="s2">&quot;/sys/block/&quot;</span><span class="o">+</span><span class="n">sdx</span><span class="o">+</span><span class="s2">&quot;/size&quot;</span>
+    <span class="k">while</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">s_path</span><span class="p">):</span>
+      <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+    <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">s_path</span><span class="p">,</span> <span class="s2">&quot;r&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+      <span class="n">d_size</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">f</span><span class="o">.</span><span class="n">read</span><span class="p">())</span>
+    <span class="n">subprocess</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="s2">&quot;parted -m &quot;</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">dev</span><span class="o">+</span><span class="s2">&quot; u s resizepart 2 &quot;</span><span class="o">+</span><span class="nb">str</span><span class="p">(</span><span class="n">d_size</span><span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">shell</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">check</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span></div>
+  
+<div class="viewcode-block" id="SdCard.write_img"><a class="viewcode-back" href="../build.html#build.SdCard.write_img">[docs]</a>  <span class="k">def</span> <span class="nf">write_img</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">img</span><span class="o">=</span><span class="n">base_img</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Block level write of img to self.dev. Needs to be rescanned and resized prior to rom addition.</span>
+<span class="sd">    Works on windows and linux, needs osx testing but should work.</span>
+<span class="sd">    </span>
+<span class="sd">    :param img: Path to image for writing to sdcard.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Writing image&quot;</span><span class="p">)</span>
+    <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">img</span><span class="p">,</span> <span class="s2">&quot;rb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">in_file</span><span class="p">:</span>
+      <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dev</span><span class="p">,</span> <span class="s2">&quot;w+b&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">out_file</span><span class="p">:</span>
+        <span class="n">out_file</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">in_file</span><span class="o">.</span><span class="n">read</span><span class="p">())</span></div>
+  
+  <span class="k">def</span> <span class="nf">_mk_dir</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Internal general creation of directory function.</span>
+<span class="sd">    Works on linux, should be agnostic. TEST</span>
+<span class="sd">    </span>
+<span class="sd">    :param path: Path to temporary directory for extraction and storage.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Making </span><span class="si">{}</span><span class="s2"> dir&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">path</span><span class="p">))</span>
+    <span class="k">try</span><span class="p">:</span>
+      <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">FileExistsError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+      <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isdir</span><span class="p">(</span><span class="n">path</span><span class="p">)</span> <span class="ow">and</span> <span class="n">os</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">R_OK</span><span class="o">|</span><span class="n">os</span><span class="o">.</span><span class="n">W_OK</span><span class="p">):</span>
+        <span class="k">pass</span>
+    <span class="k">except</span> <span class="ne">OSError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>	<span class="c1"># Python &gt;2.5</span>
+      <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">errno</span> <span class="o">==</span> <span class="n">errno</span><span class="o">.</span><span class="n">EEXIST</span> <span class="ow">and</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isdir</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
+        <span class="k">pass</span>
+      <span class="k">else</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Failed to create temp dir </span><span class="si">{}</span><span class="s2">.&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">path</span><span class="p">))</span>
+  
+<div class="viewcode-block" id="SdCard.mk_dirs"><a class="viewcode-back" href="../build.html#build.SdCard.mk_dirs">[docs]</a>  <span class="k">def</span> <span class="nf">mk_dirs</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Creates temp and root mount point directories if not already created. Leverages self._mk_dir().</span>
+<span class="sd">    Works on linux, should be cross compat. TEST</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_mk_dir</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">tmp_dir</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_mk_dir</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">mount_root</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="SdCard.rm_dirs"><a class="viewcode-back" href="../build.html#build.SdCard.rm_dirs">[docs]</a>  <span class="k">def</span> <span class="nf">rm_dirs</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Removes dirs created with self.mk_dirs()</span>
+<span class="sd">    Works on linux, should be cross compat. TEST</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Removing temp dir&quot;</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">path</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">tmp_dir</span><span class="p">:</span>
+      <span class="k">try</span><span class="p">:</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">rmdir</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+      <span class="k">except</span> <span class="ne">OSError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>	<span class="c1"># Python &gt;2.5</span>
+        <span class="n">logging</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="s2">&quot;Failed to remove temp dir </span><span class="si">{}</span><span class="s2">.&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">path</span><span class="p">))</span>
+        <span class="k">pass</span></div></div>
+
+<div class="viewcode-block" id="Download"><a class="viewcode-back" href="../build.html#build.Download">[docs]</a><span class="k">class</span> <span class="nc">Download</span><span class="p">():</span>
+  <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">  Download objects are used to track a single file from download through multiple levels of extraction. Depending on options set, they may leverage previously downloaded or extracted files. While not explicitly necessary, Download objects are expected to be extracted at least once prior to checking for rom extensions and copying to the sdcard.</span>
+<span class="sd">  </span>
+<span class="sd">  Once recursively extracted a tree of Download objects should exist within self.inner_files. Leaves should have self.extracted set to a single file or directory. They are files which either match the self.file_order expressions, or are unable to be decompressed further. Branches will have further Download objects listed within inner_Files, although they may only have been extracted and not downloaded directly. Branches are either the top level compressed file or each compressed file extracted from a previous layer of compressed Download objects.</span>
+<span class="sd">  &#39;&#39;&#39;</span>
+  <span class="k">def</span> <span class="nf">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">uri</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">compressed</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">extracted</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rm_extracted</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">md5</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">file_order</span><span class="o">=</span><span class="p">[]):</span>
+    <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Initializes a Download object</span>
+<span class="sd">    </span>
+<span class="sd">    :param uri: Uri, presently only https(s), from which to download the file.</span>
+<span class="sd">    :param compressed: Filename of compressed file, used when downloading and extracting files from this archive, and while being extracted from parent archives.</span>
+<span class="sd">    :param extracted: Filename of extracted file, should only be set if you know this is a single step extraction, or when self.extractall() finds a leaf object, indicating it can no longer be extracted further.</span>
+<span class="sd">    :param rm_extraced: Inidicator if self.compressed should be removed once all files are extracted.</span>
+<span class="sd">    :param md5: String used to ensure file integrity. Should be used with downloaded files and can be used with extracted files to avoid extracting them a second time.</span>
+<span class="sd">    :param file_order: Array of compiled regular expressions used to check if files extracted from this object are leaf or branch types.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">uri</span> <span class="o">=</span> <span class="n">uri</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">compressed</span> <span class="o">=</span> <span class="n">compressed</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">extracted</span> <span class="o">=</span> <span class="n">extracted</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">inner_files</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">file_order</span> <span class="o">=</span> <span class="n">file_order</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">is_extracted</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">md5</span> <span class="o">=</span> <span class="n">md5</span>
+    
+<div class="viewcode-block" id="Download.download"><a class="viewcode-back" href="../build.html#build.Download.download">[docs]</a>  <span class="k">def</span> <span class="nf">download</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+    <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Downloads self.uri into path+self.compressed, or path+basename(self.uri)</span>
+<span class="sd">    </span>
+<span class="sd">    :param path: Path to temporary directory for extraction and storage.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+    <span class="c1"># Download the file from `url` and save it locally under `file_name`:</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Downloading file: </span><span class="si">{}</span><span class="s2"> from: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">compressed</span><span class="p">,</span><span class="bp">self</span><span class="o">.</span><span class="n">uri</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">compressed</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">md5</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+      <span class="n">md5</span> <span class="o">=</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">md5</span><span class="p">(</span><span class="nb">open</span><span class="p">(</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">compressed</span><span class="p">,</span> <span class="s2">&quot;rb&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read</span><span class="p">())</span><span class="o">.</span><span class="n">hexdigest</span><span class="p">()</span>
+      <span class="k">if</span> <span class="n">md5</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">md5</span><span class="p">:</span>
+        <span class="k">return</span>
+    <span class="c1"># no existing file, or not matching sum</span>
+    <span class="k">with</span> <span class="n">urllib</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">urlopen</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">uri</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mi">300</span><span class="p">)</span> <span class="k">as</span> <span class="n">response</span><span class="p">,</span> <span class="nb">open</span><span class="p">(</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">compressed</span><span class="p">,</span> <span class="s1">&#39;wb&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">out_file</span><span class="p">:</span>
+      <span class="n">shutil</span><span class="o">.</span><span class="n">copyfileobj</span><span class="p">(</span><span class="n">response</span><span class="p">,</span> <span class="n">out_file</span><span class="p">)</span></div>
+  
+<div class="viewcode-block" id="Download.is_rom"><a class="viewcode-back" href="../build.html#build.Download.is_rom">[docs]</a>  <span class="k">def</span> <span class="nf">is_rom</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">f_name</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">):</span>
+    <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Checks f_name for matches of self.extensions</span>
+<span class="sd">    </span>
+<span class="sd">    :param f_name: Filename string to be matched against</span>
+<span class="sd">    :returns bool: Result of matching</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+    <span class="k">for</span> <span class="n">ext</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">extensions</span><span class="p">:</span>
+      <span class="k">if</span> <span class="n">ext</span><span class="o">.</span><span class="n">match</span><span class="p">(</span><span class="n">f_name</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">True</span>
+    <span class="k">return</span> <span class="kc">False</span></div>
+
+<div class="viewcode-block" id="Download.untar"><a class="viewcode-back" href="../build.html#build.Download.untar">[docs]</a>  <span class="k">def</span> <span class="nf">untar</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">member</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+    <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Untars member from self.compressed to path+member.</span>
+<span class="sd">    </span>
+<span class="sd">    :param member: Name of object within self.compressed to be extracted and written to as path+this</span>
+<span class="sd">    :param path: Path to temporary directory for extraction and storage.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Untar file: </span><span class="si">{}</span><span class="s2"> to: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">compessed</span><span class="p">,</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">extracted</span><span class="p">))</span>
+    <span class="k">with</span> <span class="n">tarfile</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">compressed</span><span class="p">)</span> <span class="k">as</span> <span class="n">tar</span><span class="p">:</span>
+      <span class="k">with</span> <span class="n">tar</span><span class="o">.</span><span class="n">extractfile</span><span class="p">(</span><span class="n">member</span><span class="p">)</span> <span class="k">as</span> <span class="n">xtar</span><span class="p">,</span> <span class="nb">open</span><span class="p">(</span><span class="n">path</span><span class="o">+</span><span class="n">member</span><span class="p">,</span> <span class="s1">&#39;w+&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fout</span><span class="p">:</span>
+        <span class="n">fout</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">xtar</span><span class="o">.</span><span class="n">read</span><span class="p">())</span></div>
+  
+<div class="viewcode-block" id="Download.unzip"><a class="viewcode-back" href="../build.html#build.Download.unzip">[docs]</a>  <span class="k">def</span> <span class="nf">unzip</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+    <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Presently extracts all members of a zip to path.</span>
+<span class="sd">    Should extract a given member from self being a zip to path.</span>
+<span class="sd">    </span>
+<span class="sd">    :param member: Name of object within self.compressed to be extracted and written to as path+this</span>
+<span class="sd">    :param path: Path to temporary directory for extraction and storage.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Unzip file: </span><span class="si">{}</span><span class="s2"> to: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">compessed</span><span class="p">,</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">extracted</span><span class="p">))</span>
+    <span class="n">filelist</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">with</span> <span class="n">zipfile</span><span class="o">.</span><span class="n">ZipFile</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">compressed</span><span class="p">)</span> <span class="k">as</span> <span class="n">zf</span><span class="p">:</span>
+      <span class="n">filelist</span> <span class="o">=</span> <span class="n">zf</span><span class="o">.</span><span class="n">infolist</span><span class="p">()</span>
+      <span class="k">for</span> <span class="n">member</span> <span class="ow">in</span> <span class="n">filelist</span><span class="p">:</span>
+        <span class="c1"># Path traversal defense copied from</span>
+        <span class="c1"># http://hg.python.org/cpython/file/tip/Lib/http/server.py#l789</span>
+        <span class="n">words</span> <span class="o">=</span> <span class="n">member</span><span class="o">.</span><span class="n">filename</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;/&#39;</span><span class="p">)</span>
+        <span class="n">epath</span> <span class="o">=</span> <span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">extracted</span>
+        <span class="k">for</span> <span class="n">word</span> <span class="ow">in</span> <span class="n">words</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">]:</span>
+          <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+            <span class="n">drive</span><span class="p">,</span> <span class="n">word</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">splitdrive</span><span class="p">(</span><span class="n">word</span><span class="p">)</span>
+            <span class="n">head</span><span class="p">,</span> <span class="n">word</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">word</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">drive</span><span class="p">:</span>
+              <span class="k">break</span>
+            <span class="k">if</span> <span class="n">word</span> <span class="ow">in</span> <span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">curdir</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">pardir</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">):</span>
+              <span class="k">continue</span>
+            <span class="n">epath</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">epath</span><span class="p">,</span> <span class="n">word</span><span class="p">)</span>
+        <span class="n">zf</span><span class="o">.</span><span class="n">extract</span><span class="p">(</span><span class="n">member</span><span class="p">,</span> <span class="n">epath</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">inner_files</span> <span class="o">=</span> <span class="n">filelist</span></div>
+  
+<div class="viewcode-block" id="Download.unlzma"><a class="viewcode-back" href="../build.html#build.Download.unlzma">[docs]</a>  <span class="k">def</span> <span class="nf">unlzma</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+    <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Currently, treats self.compressed as though it has a single file within and writes to self.path.</span>
+<span class="sd">    Should be, reads self.compressed for member writing to path+member</span>
+<span class="sd">    </span>
+<span class="sd">    :param member: Name of object within self.compressed to be extracted and written to as path+this</span>
+<span class="sd">    :param path: Path to temporary directory for extraction and storage.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Unlzma file: </span><span class="si">{}</span><span class="s2"> to: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">compessed</span><span class="p">,</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">extracted</span><span class="p">))</span>
+    <span class="n">cpath</span><span class="o">=</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">compressed</span>
+    <span class="n">epath</span><span class="o">=</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">extracted</span>
+    <span class="k">with</span> <span class="n">lzma</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">cpath</span><span class="p">)</span> <span class="k">as</span> <span class="n">fin</span><span class="p">,</span> <span class="nb">open</span><span class="p">(</span><span class="n">epath</span><span class="p">,</span> <span class="s1">&#39;wb&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fout</span><span class="p">:</span>
+      <span class="n">fout</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">fin</span><span class="o">.</span><span class="n">read</span><span class="p">())</span></div>
+  
+<div class="viewcode-block" id="Download.ungz"><a class="viewcode-back" href="../build.html#build.Download.ungz">[docs]</a>  <span class="k">def</span> <span class="nf">ungz</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">member</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+    <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Gzip decompresses self.compressed for internal object using member as path for finding and writing output.</span>
+<span class="sd">    </span>
+<span class="sd">    :param member: Name of object within self.compressed to be extracted and written to as path+this</span>
+<span class="sd">    :param path: Path to temporary directory for extraction and storage.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Ungz file: </span><span class="si">{}</span><span class="s2"> to: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">path</span><span class="o">+</span><span class="bp">self</span><span class="o">.</span><span class="n">compressed</span><span class="p">,</span><span class="n">path</span><span class="o">+</span><span class="n">member</span><span class="p">))</span>
+    <span class="n">cpath</span><span class="o">=</span><span class="n">path</span><span class="o">+</span><span class="n">member</span>
+    <span class="n">epath</span><span class="o">=</span><span class="n">path</span><span class="o">+</span><span class="n">member</span>
+    <span class="k">with</span> <span class="n">gzip</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">cpath</span><span class="p">,</span> <span class="s1">&#39;rb&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fin</span><span class="p">,</span> <span class="nb">open</span><span class="p">(</span><span class="n">epath</span><span class="p">,</span> <span class="s1">&#39;wb&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fout</span><span class="p">:</span>
+      <span class="n">fout</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">fin</span><span class="o">.</span><span class="n">read</span><span class="p">())</span></div>
+  
+<div class="viewcode-block" id="Download.decompress"><a class="viewcode-back" href="../build.html#build.Download.decompress">[docs]</a>  <span class="k">def</span> <span class="nf">decompress</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">member</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Decompress a single file from self into a temporary path</span>
+<span class="sd">    plus compressed name. Presently works with any combination</span>
+<span class="sd">    of: tar, gzip, xz, and zip files. 7zip soon...</span>
+<span class="sd">    </span>
+<span class="sd">    :param member: Name of object within self.compressed to be extracted and written to as path+this</span>
+<span class="sd">    :param path: Path to temporary directory for extraction and storage.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Starting magic based decompression&quot;</span><span class="p">)</span>
+    <span class="n">base</span> <span class="o">=</span> <span class="s2">&quot;application/&quot;</span>
+    <span class="n">ty</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+    <span class="k">with</span> <span class="n">magic</span><span class="o">.</span><span class="n">Magic</span><span class="p">(</span><span class="n">flags</span><span class="o">=</span><span class="n">magic</span><span class="o">.</span><span class="n">MAGIC_MIME_TYPE</span><span class="p">)</span> <span class="k">as</span> <span class="n">m</span><span class="p">:</span>
+      <span class="n">ty</span> <span class="o">=</span> <span class="n">m</span><span class="o">.</span><span class="n">id_filename</span><span class="p">(</span><span class="n">path</span><span class="o">+</span><span class="n">member</span><span class="p">)</span>
+    <span class="n">sw</span> <span class="o">=</span> <span class="p">{</span>
+      <span class="n">base</span><span class="o">+</span><span class="s1">&#39;x-tar&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">untar</span><span class="p">,</span>
+      <span class="n">base</span><span class="o">+</span><span class="s1">&#39;x-gzip&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">ungz</span><span class="p">,</span>
+      <span class="n">base</span><span class="o">+</span><span class="s1">&#39;x-xz&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">unlzma</span><span class="p">,</span>
+      <span class="n">base</span><span class="o">+</span><span class="s1">&#39;x-7z-compressed&#39;</span><span class="p">:</span> <span class="kc">None</span><span class="p">,</span>
+      <span class="n">base</span><span class="o">+</span><span class="s1">&#39;zip&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">unzip</span>
+    <span class="p">}</span>
+    <span class="k">if</span> <span class="n">ty</span> <span class="ow">in</span> <span class="n">sw</span><span class="o">.</span><span class="n">keys</span><span class="p">():</span>
+      <span class="n">fn</span> <span class="o">=</span> <span class="n">sw</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">ty</span><span class="p">)</span>
+      <span class="n">fn</span><span class="p">(</span><span class="n">member</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+      <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;found unknown type: </span><span class="si">{}</span><span class="s2"> for file: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">ty</span><span class="p">,</span> <span class="n">path</span><span class="o">+</span><span class="n">member</span><span class="p">))</span></div>
+  
+<div class="viewcode-block" id="Download.decompress_all"><a class="viewcode-back" href="../build.html#build.Download.decompress_all">[docs]</a>  <span class="k">def</span> <span class="nf">decompress_all</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Takes a download object and processes as needed.</span>
+<span class="sd">    We build an object tree using objects with an extracted</span>
+<span class="sd">    path set to indicate final rom files vs without being</span>
+<span class="sd">    files of a further compressed file. the list of files</span>
+<span class="sd">    contained within this parent is stored as a list of</span>
+<span class="sd">    inner object types within the self.inner_objects.</span>
+<span class="sd">    Once rom vs rar is determined, recurse if needed. After</span>
+<span class="sd">    this the inner_files can of self can be walked for a</span>
+<span class="sd">    file tree.</span>
+<span class="sd">    </span>
+<span class="sd">    :param path: Path to temporary directory for extraction and storage.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    
+    <span class="c1"># get list of inner files for parsing</span>
+    <span class="n">list_t</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_inner_files</span><span class="p">()</span> <span class="c1">#todo</span>
+    <span class="c1"># parse list of files into roms and compressed files, after this extraction</span>
+    <span class="n">rom_list</span> <span class="o">=</span> <span class="p">[</span><span class="n">file_t</span> <span class="k">for</span> <span class="n">file_t</span> <span class="ow">in</span> <span class="n">list_t</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_rom</span><span class="p">(</span><span class="n">file_t</span><span class="p">)]</span>
+    <span class="n">rar_list</span> <span class="o">=</span> <span class="p">[</span><span class="n">file_t</span> <span class="k">for</span> <span class="n">file_t</span> <span class="ow">in</span> <span class="n">list_t</span> <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_rom</span><span class="p">(</span><span class="n">file_t</span><span class="p">)]</span>
+    <span class="c1"># append roms list and rar list to inner_files. use self.extracted to determine extract method</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">inner_files</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+      <span class="n">Download</span><span class="p">(</span>
+        <span class="n">compressed</span><span class="o">=</span><span class="n">rom</span><span class="p">,</span>
+        <span class="n">extracted</span><span class="o">=</span><span class="n">path</span><span class="o">+</span><span class="n">rom</span><span class="p">,</span>
+        <span class="n">rm_extracted</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rm</span>
+      <span class="p">)</span> <span class="k">for</span> <span class="n">rom</span> <span class="ow">in</span> <span class="n">rom_list</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">inner_files</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+      <span class="n">Download</span><span class="p">(</span>
+        <span class="n">compressed</span><span class="o">=</span><span class="n">rar</span><span class="p">,</span>
+        <span class="n">file_order</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">file_order</span><span class="p">,</span>
+        <span class="n">rm_extracted</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">rm</span>
+      <span class="p">)</span> <span class="k">for</span> <span class="n">rar</span> <span class="ow">in</span> <span class="n">rar_list</span><span class="p">)</span>
+    <span class="c1"># cycle through list of files within this compressed file and extract and continue building tree if needed</span>
+    <span class="k">for</span> <span class="n">i_f</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">inner_files</span><span class="p">:</span>
+      <span class="bp">self</span><span class="o">.</span><span class="n">decompress</span><span class="p">(</span><span class="n">i_f</span><span class="o">.</span><span class="n">compressed_path</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
+      <span class="k">if</span> <span class="n">i_f</span><span class="o">.</span><span class="n">extracted</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span> <span class="c1"># have final file we want</span>
+        <span class="n">i_f</span><span class="o">.</span><span class="n">decompress_all</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rm</span><span class="p">:</span>
+      <span class="bp">self</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">path</span><span class="p">)</span></div></div>
+    
+
+<div class="viewcode-block" id="Config"><a class="viewcode-back" href="../build.html#build.Config">[docs]</a><span class="k">class</span> <span class="nc">Config</span><span class="p">():</span>
+  <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">  Config objects read the configuration provided by command line arguments and store json representations of other objects here. As needed the sdcard(SdCard), retropie(Download), and emulators(list(Download)) objects can be created. If manipulation or alteration of these base initializations is needed, it should be done either with the read configuration or after generation of object.</span>
+<span class="sd">  &#39;&#39;&#39;</span>
+  <span class="k">def</span> <span class="nf">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+    <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Initializes a Config object from the file provided byt path.</span>
+<span class="sd">    </span>
+<span class="sd">    :params path: Path to configuration file</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+    <span class="k">if</span> <span class="n">path</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+      <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Must provide path to config objects.&quot;</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">path</span> <span class="o">=</span> <span class="n">path</span>
+    <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="s2">&quot;r+&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">cfg</span><span class="p">:</span>
+      <span class="bp">self</span><span class="o">.</span><span class="n">json</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">sdcard</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">json</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;sdcard&quot;</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">retropie</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">json</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;retropie&quot;</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">emulators</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">json</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;emulators&quot;</span><span class="p">)</span>
+  
+<div class="viewcode-block" id="Config.get_sdcard"><a class="viewcode-back" href="../build.html#build.Config.get_sdcard">[docs]</a>  <span class="k">def</span> <span class="nf">get_sdcard</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+    <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Generates an SdCard object from internal jsons objects. Allows cli args to override config, if provided.</span>
+<span class="sd">    </span>
+<span class="sd">    :params args: Argument structure provided buy parse_args().</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+    <span class="n">sdcard</span> <span class="o">=</span> <span class="n">SdCard</span><span class="p">(</span><span class="n">dev</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">sdcard</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;dev_path&quot;</span><span class="p">),</span>
+      <span class="n">mount</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">sdcard</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;mount_path&quot;</span><span class="p">),</span> <span class="n">fs</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">sdcard</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;filesystem&quot;</span><span class="p">),</span>
+      <span class="n">dirs</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">sdcard</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;temp_path&quot;</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">sdcard</span> <span class="ow">is</span> <span class="s2">&quot;&quot;</span> <span class="ow">and</span> <span class="mi">0</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">sdcard</span><span class="p">)</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">sdcard</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="mi">255</span><span class="p">:</span>
+      <span class="n">sdcard</span><span class="o">.</span><span class="n">dev</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">sdcard</span>
+      <span class="n">sdcard</span><span class="o">.</span><span class="n">dev_boot</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">sdcard</span><span class="o">+</span><span class="s2">&quot;1&quot;</span>
+      <span class="n">sdcard</span><span class="o">.</span><span class="n">dev_root</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">sdcard</span><span class="o">+</span><span class="s2">&quot;2&quot;</span>
+    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">mount</span> <span class="ow">is</span> <span class="s2">&quot;&quot;</span> <span class="ow">and</span> <span class="mi">0</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">mount</span><span class="p">)</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">mount</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="mi">255</span><span class="p">:</span>
+      <span class="n">sdcard</span><span class="o">.</span><span class="n">mount_root</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">mount</span>
+      <span class="n">sdcard</span><span class="o">.</span><span class="n">mount_boot</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">mount</span><span class="o">+</span><span class="s2">&quot;/boot&quot;</span>
+    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">temp</span> <span class="ow">is</span> <span class="s2">&quot;&quot;</span> <span class="ow">and</span> <span class="mi">0</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">temp</span><span class="p">)</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">temp</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="mi">255</span><span class="p">:</span>
+      <span class="n">sdcard</span><span class="o">.</span><span class="n">tmp_dir</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">temp</span>
+    <span class="k">return</span> <span class="n">sdcard</span></div>
+  
+<div class="viewcode-block" id="Config.get_retropie"><a class="viewcode-back" href="../build.html#build.Config.get_retropie">[docs]</a>  <span class="k">def</span> <span class="nf">get_retropie</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Generates a Download object with for retropie image use. Specifically it sets extracted and compressed so we know it&#39;s a single extraction and the wanted output file.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+    <span class="k">return</span> <span class="n">Download</span><span class="p">(</span>
+      <span class="n">uri</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">retropie</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;uri&quot;</span><span class="p">),</span>
+      <span class="n">compressed</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">retropie</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;compressed_path&quot;</span><span class="p">),</span>
+      <span class="n">extracted</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">retropie</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;extracted_path&quot;</span><span class="p">),</span>
+      <span class="n">md5</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">retropie</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;md5&quot;</span><span class="p">),</span>
+      <span class="n">rm_extracted</span><span class="o">=</span><span class="kc">True</span> <span class="p">)</span></div>
+  
+<div class="viewcode-block" id="Config.get_emulators"><a class="viewcode-back" href="../build.html#build.Config.get_emulators">[docs]</a>  <span class="k">def</span> <span class="nf">get_emulators</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">    Generates a list of Download objects, set such that they will search internally and build the inner_files tree as needed.</span>
+<span class="sd">    &#39;&#39;&#39;</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Entered get_emulators() with path: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">path</span><span class="p">))</span>
+    <span class="n">emulators</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">settings</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">emulators</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+      <span class="k">if</span> <span class="n">settings</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;cp_to_sd&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="kc">True</span><span class="p">:</span>
+        <span class="n">logging</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;rom_uris: </span><span class="si">{}</span><span class="s2"> sub_cmp: &quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">settings</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;rom_uris&quot;</span><span class="p">)))</span>
+        <span class="nb">cmp</span> <span class="o">=</span> <span class="n">RE_COMPRESSED</span><span class="o">.</span><span class="n">match</span><span class="p">(</span><span class="n">settings</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;rom_uris&quot;</span><span class="p">))</span><span class="o">.</span><span class="n">group</span><span class="p">(</span><span class="s2">&quot;cmp&quot;</span><span class="p">)</span> <span class="c1"># not working with arrays of uris, also how to handle them...</span>
+        <span class="n">f_o</span> <span class="o">=</span> <span class="p">[</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="s1">&#39;.+\.&#39;</span><span class="o">+</span><span class="n">ext</span><span class="o">+</span><span class="s1">&#39;$&#39;</span><span class="p">)</span> <span class="k">for</span> <span class="n">ext</span> <span class="ow">in</span> <span class="n">settings</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;extensions&quot;</span><span class="p">)</span> <span class="p">]</span>
+        <span class="n">emulators</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">Download</span><span class="p">(</span>
+                      <span class="n">uri</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;rom_uris&quot;</span><span class="p">),</span>
+                      <span class="n">compressed</span><span class="o">=</span><span class="nb">cmp</span><span class="p">,</span>
+                      <span class="n">get_all</span><span class="o">=</span><span class="n">settings</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;dl_all_b4_extract&quot;</span><span class="p">),</span>
+                      <span class="n">file_order</span><span class="o">=</span><span class="n">f_o</span><span class="p">))</span></div></div>
+
+<div class="viewcode-block" id="parse_args"><a class="viewcode-back" href="../build.html#build.parse_args">[docs]</a><span class="k">def</span> <span class="nf">parse_args</span><span class="p">(</span><span class="n">args</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+  <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">  Parse commandline arguments. Natively handles help. Commandline arguments superscede config options.</span>
+<span class="sd">  </span>
+<span class="sd">  :param args: Argv</span>
+<span class="sd">  &#39;&#39;&#39;</span>
+  <span class="n">parser</span> <span class="o">=</span> <span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentParser</span><span class="p">(</span><span class="n">description</span><span class="o">=</span><span class="s2">&quot;RetroPie Image Builder </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">VERSION</span><span class="p">))</span>
+  <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;-c&quot;</span><span class="p">,</span> <span class="s2">&quot;--config&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Path to configuration file.&quot;</span><span class="p">)</span>
+  <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;-s&quot;</span><span class="p">,</span> <span class="s2">&quot;--sdcard&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Path to sdcard device.&quot;</span><span class="p">)</span>
+  <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;-m&quot;</span><span class="p">,</span> <span class="s2">&quot;--mount&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Mountpoint for sdcard.&quot;</span><span class="p">)</span>
+  <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;-t&quot;</span><span class="p">,</span> <span class="s2">&quot;--temp&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+    <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Path to temporary directory for downloads and extraction&quot;</span><span class="p">)</span>
+  <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;-v&quot;</span><span class="p">,</span> <span class="s2">&quot;--verbose&quot;</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;count&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Verbose output.&quot;</span><span class="p">)</span>
+  <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--parse-config&quot;</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;count&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;total_options+=parse config only&quot;</span><span class="p">)</span>
+  <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--image-sdcard&quot;</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;count&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;total_options+=download, extract, and image retropie onto sdcard&quot;</span><span class="p">)</span>
+  <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--install-roms&quot;</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;count&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;total_options+=download, extract and cp roms, mount and unmount sdcard&quot;</span><span class="p">)</span>
+  <span class="n">args</span> <span class="o">=</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_args</span><span class="p">(</span><span class="n">args</span><span class="p">)</span>
+  
+  <span class="k">if</span> <span class="ow">not</span> <span class="n">args</span><span class="o">.</span><span class="n">config</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Please specify a configuration file&quot;</span><span class="p">)</span>
+    <span class="n">print_help</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+  
+  <span class="n">execute_flag</span> <span class="o">=</span> <span class="n">EF_NO_FLAGS</span>
+  <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">parse</span><span class="o">-</span><span class="n">config</span> <span class="ow">and</span> <span class="mi">0</span> <span class="o">&lt;=</span> <span class="n">args</span><span class="o">.</span><span class="n">parse</span><span class="o">-</span><span class="n">config</span><span class="p">:</span>
+    <span class="n">execute_flag</span> <span class="o">&amp;=</span> <span class="n">EF_PARSE_CONFIG</span>
+  <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">image</span><span class="o">-</span><span class="n">sdcard</span> <span class="ow">and</span> <span class="mi">0</span> <span class="o">&lt;=</span> <span class="n">args</span><span class="o">.</span><span class="n">image</span><span class="o">-</span><span class="n">sdcard</span><span class="p">:</span>
+    <span class="n">execute_flag</span> <span class="o">&amp;=</span> <span class="n">EF_IMAGE_SDCARD</span>
+  <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">install</span><span class="o">-</span><span class="n">roms</span> <span class="ow">and</span> <span class="mi">0</span> <span class="o">&lt;=</span> <span class="n">args</span><span class="o">.</span><span class="n">install</span><span class="o">-</span><span class="n">roms</span><span class="p">:</span>
+    <span class="n">execute_flag</span> <span class="o">&amp;=</span> <span class="n">EF_INSTALL_ROMS</span>
+  <span class="k">if</span> <span class="n">execute_flag</span> <span class="o">==</span> <span class="n">EF_NO_FLAGS</span><span class="p">:</span>
+    <span class="n">execute_flag</span> <span class="o">=</span> <span class="n">EF_MAX_FLAGS</span> <span class="c1"># way more than any unique flags we would need... hopefully</span>
+  <span class="n">logging</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Generated execute flag: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">execute_flag</span><span class="p">))</span>
+  <span class="n">args</span><span class="o">.</span><span class="n">e_flag</span> <span class="o">=</span> <span class="n">execute_flag</span>
+  
+  <span class="k">return</span> <span class="n">args</span></div>
+
+<div class="viewcode-block" id="main"><a class="viewcode-back" href="../build.html#build.main">[docs]</a><span class="k">def</span> <span class="nf">main</span><span class="p">(</span><span class="n">argv</span><span class="p">):</span>
+  <span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">  Execute as arguments indicated by cli.</span>
+<span class="sd">  </span>
+<span class="sd">  :param argv: sys.argv array for parsing.</span>
+<span class="sd">  &#39;&#39;&#39;</span>
+  <span class="n">args</span> <span class="o">=</span> <span class="n">parse_args</span><span class="p">(</span><span class="n">argv</span><span class="p">)</span>
+  <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">verbose</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;got verbose </span><span class="si">{}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">verbose</span><span class="p">)</span>
+    <span class="n">sw</span> <span class="o">=</span> <span class="p">{</span>
+      <span class="mi">0</span><span class="p">:</span> <span class="n">logging</span><span class="o">.</span><span class="n">NOTSET</span><span class="p">,</span>
+      <span class="mi">1</span><span class="p">:</span> <span class="n">logging</span><span class="o">.</span><span class="n">INFO</span><span class="p">,</span>
+      <span class="mi">2</span><span class="p">:</span> <span class="n">logging</span><span class="o">.</span><span class="n">CRITICAL</span><span class="p">,</span>
+    <span class="p">}</span>
+    <span class="n">args</span><span class="o">.</span><span class="n">verbose</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">verbose</span> <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">verbose</span> <span class="o">&lt;=</span> <span class="mi">2</span> <span class="k">else</span> <span class="mi">2</span>
+    <span class="n">logging</span><span class="o">.</span><span class="n">basicConfig</span><span class="p">(</span><span class="n">level</span><span class="o">=</span><span class="n">sw</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">verbose</span><span class="p">),</span>
+                      <span class="nb">format</span><span class="o">=</span><span class="s1">&#39;</span><span class="si">%(levelname)-8s</span><span class="s1"> </span><span class="si">%(message)s</span><span class="s1">&#39;</span><span class="p">,</span>
+                      <span class="n">datefmt</span><span class="o">=</span><span class="s1">&#39;%m-</span><span class="si">%d</span><span class="s1"> %H:%M&#39;</span><span class="p">)</span>
+  
+  <span class="k">if</span> <span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">e_flag</span> <span class="o">&amp;</span> <span class="n">EF_PARSE_CONFIG</span><span class="p">)</span> <span class="o">==</span> <span class="n">EF_PARSE_CONFIG</span><span class="p">:</span>
+    <span class="n">config</span> <span class="o">=</span> <span class="n">Config</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">config</span><span class="p">)</span>
+    <span class="n">sdcard</span> <span class="o">=</span> <span class="n">config</span><span class="o">.</span><span class="n">get_sdcard</span><span class="p">(</span><span class="n">args</span><span class="p">)</span>
+    <span class="n">retropie</span> <span class="o">=</span> <span class="n">config</span><span class="o">.</span><span class="n">get_retropie</span><span class="p">()</span>
+    <span class="n">emulators</span> <span class="o">=</span> <span class="n">config</span><span class="o">.</span><span class="n">get_emulators</span><span class="p">(</span><span class="n">sdcard</span><span class="o">.</span><span class="n">tmp_dir</span><span class="p">)</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">e_flag</span> <span class="o">&amp;</span> <span class="n">EF_IMAGE_SDCARD</span><span class="p">)</span> <span class="o">==</span> <span class="n">EF_IMAGE_SDCARD</span><span class="p">:</span>
+    <span class="n">sdcard</span><span class="o">.</span><span class="n">mk_dirs</span><span class="p">(</span><span class="n">sdcard</span><span class="o">.</span><span class="n">tmp_dir</span><span class="p">)</span>
+    <span class="n">retropie</span><span class="o">.</span><span class="n">download</span><span class="p">(</span><span class="n">sdcard</span><span class="o">.</span><span class="n">tmp_dir</span><span class="p">)</span>
+    <span class="n">retropie</span><span class="o">.</span><span class="n">decompress</span><span class="p">(</span><span class="n">sdcard</span><span class="o">.</span><span class="n">tmp_dir</span><span class="p">)</span>
+    <span class="n">sdcard</span><span class="o">.</span><span class="n">write_img</span><span class="p">(</span><span class="n">retropie</span><span class="o">.</span><span class="n">extracted</span><span class="p">)</span>
+    
+    <span class="k">try</span><span class="p">:</span>
+      <span class="n">sdcard</span><span class="o">.</span><span class="n">rescan_drive</span><span class="p">()</span>
+    <span class="k">except</span> <span class="ne">PermissionError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+      <span class="n">logging</span><span class="o">.</span><span class="n">ERROR</span><span class="p">(</span><span class="s2">&quot;Rescan error, sleeping 5s&quot;</span><span class="p">)</span>
+      <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span>
+    
+    <span class="k">try</span><span class="p">:</span>
+      <span class="n">sdcard</span><span class="o">.</span><span class="n">resize_drive</span><span class="p">()</span>
+    <span class="k">except</span> <span class="ne">PermissionError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+      <span class="n">logging</span><span class="o">.</span><span class="n">ERROR</span><span class="p">(</span><span class="s2">&quot;Resize error, exiting: </span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">e</span><span class="p">))</span>
+      <span class="k">return</span> <span class="mi">1</span>
+  
+  <span class="k">if</span> <span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">e_flag</span> <span class="o">&amp;</span> <span class="n">EF_INSTALL_ROMS</span><span class="p">)</span> <span class="o">==</span> <span class="n">EF_INSTALL_ROMS</span><span class="p">:</span>
+    <span class="k">try</span><span class="p">:</span>
+      <span class="n">sdcard</span><span class="o">.</span><span class="n">mount</span><span class="p">()</span>
+    <span class="k">except</span> <span class="ne">RuntimeError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+      <span class="nb">print</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
+      <span class="k">return</span> <span class="mi">1</span>
+    
+    <span class="k">for</span> <span class="n">emulator</span> <span class="ow">in</span> <span class="n">emulators</span><span class="p">:</span>
+      <span class="n">emulator</span><span class="o">.</span><span class="n">download</span><span class="p">()</span>
+      <span class="n">emulator</span><span class="o">.</span><span class="n">decompress</span><span class="p">()</span>
+      <span class="n">emulator</span><span class="o">.</span><span class="n">cp_to_sd</span><span class="p">()</span>
+    
+    <span class="n">sdcard</span><span class="o">.</span><span class="n">unmount</span><span class="p">()</span>
+  
+  <span class="n">later</span> <span class="o">=</span> <span class="s2">&quot;&quot;&quot;</span>
+<span class="s2">    handle more errors</span>
+<span class="s2">    verify osx pathing and drives</span>
+<span class="s2">    backup/restore of controllers and saves</span>
+<span class="s2">  &quot;&quot;&quot;</span></div>
+
+<span class="sd">&#39;&#39;&#39;</span>
+<span class="sd">Are we actually in main? If so, someone called us directly and we should process as such...</span>
+<span class="sd">&#39;&#39;&#39;</span>
+<span class="k">if</span> <span class="n">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+  <span class="n">exit_code</span> <span class="o">=</span> <span class="n">main</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">argv</span><span class="p">[</span><span class="mi">1</span><span class="p">:])</span>
+  <span class="n">sys</span><span class="o">.</span><span class="n">exit</span><span class="p">(</span><span class="n">exit_code</span><span class="p">)</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper"><div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../index.html">Documentation overview</a><ul>
+  <li><a href="index.html">Module code</a><ul>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<div id="searchbox" style="display: none" role="search">
+  <h3>Quick search</h3>
+    <form class="search" action="../search.html" method="get">
+      <div><input type="text" name="q" /></div>
+      <div><input type="submit" value="Go" /></div>
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &copy;2016, Spenser Reinhardt.
+      
+      |
+      Powered by <a href="http://sphinx-doc.org/">Sphinx 1.4.6</a>
+      &amp; <a href="https://github.com/bitprophet/alabaster">Alabaster 0.7.9</a>
+      
+    </div>
+
+    
+
+    
+  </body>
+</html>

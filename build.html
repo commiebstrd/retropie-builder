@@ -1,0 +1,374 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>build module &#8212; RetroPie-Builder 0.0.0 documentation</title>
+    
+    <link rel="stylesheet" href="_static/alabaster.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '0.0.0',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="RetroPie-Builder 0.0.0 documentation" href="index.html" />
+   
+  <link rel="stylesheet" href="_static/custom.css" type="text/css" />
+  
+  
+  <meta name="viewport" content="width=device-width, initial-scale=0.9, maximum-scale=0.9" />
+
+  </head>
+  <body role="document">
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="module-build">
+<span id="build-module"></span><h1>build module<a class="headerlink" href="#module-build" title="Permalink to this headline">¶</a></h1>
+<dl class="class">
+<dt id="build.Config">
+<em class="property">class </em><code class="descclassname">build.</code><code class="descname">Config</code><span class="sig-paren">(</span><em>path=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Config"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Config" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Config objects read the configuration provided by command line arguments and store json representations of other objects here. As needed the sdcard(SdCard), retropie(Download), and emulators(list(Download)) objects can be created. If manipulation or alteration of these base initializations is needed, it should be done either with the read configuration or after generation of object.</p>
+<dl class="method">
+<dt id="build.Config.get_emulators">
+<code class="descname">get_emulators</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Config.get_emulators"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Config.get_emulators" title="Permalink to this definition">¶</a></dt>
+<dd><p>Generates a list of Download objects, set such that they will search internally and build the inner_files tree as needed.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.Config.get_retropie">
+<code class="descname">get_retropie</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Config.get_retropie"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Config.get_retropie" title="Permalink to this definition">¶</a></dt>
+<dd><p>Generates a Download object with for retropie image use. Specifically it sets extracted and compressed so we know it&#8217;s a single extraction and the wanted output file.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.Config.get_sdcard">
+<code class="descname">get_sdcard</code><span class="sig-paren">(</span><em>args</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Config.get_sdcard"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Config.get_sdcard" title="Permalink to this definition">¶</a></dt>
+<dd><p>Generates an SdCard object from internal jsons objects. Allows cli args to override config, if provided.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Params args:</th><td class="field-body">Argument structure provided buy parse_args().</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="build.Download">
+<em class="property">class </em><code class="descclassname">build.</code><code class="descname">Download</code><span class="sig-paren">(</span><em>uri=None</em>, <em>compressed=None</em>, <em>extracted=None</em>, <em>rm_extracted=False</em>, <em>md5=None</em>, <em>file_order=[]</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Download"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Download" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Download objects are used to track a single file from download through multiple levels of extraction. Depending on options set, they may leverage previously downloaded or extracted files. While not explicitly necessary, Download objects are expected to be extracted at least once prior to checking for rom extensions and copying to the sdcard.</p>
+<p>Once recursively extracted a tree of Download objects should exist within self.inner_files. Leaves should have self.extracted set to a single file or directory. They are files which either match the self.file_order expressions, or are unable to be decompressed further. Branches will have further Download objects listed within inner_Files, although they may only have been extracted and not downloaded directly. Branches are either the top level compressed file or each compressed file extracted from a previous layer of compressed Download objects.</p>
+<dl class="method">
+<dt id="build.Download.decompress">
+<code class="descname">decompress</code><span class="sig-paren">(</span><em>member</em>, <em>path</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Download.decompress"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Download.decompress" title="Permalink to this definition">¶</a></dt>
+<dd><p>Decompress a single file from self into a temporary path
+plus compressed name. Presently works with any combination
+of: tar, gzip, xz, and zip files. 7zip soon...</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>member</strong> &#8211; Name of object within self.compressed to be extracted and written to as path+this</li>
+<li><strong>path</strong> &#8211; Path to temporary directory for extraction and storage.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.Download.decompress_all">
+<code class="descname">decompress_all</code><span class="sig-paren">(</span><em>path</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Download.decompress_all"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Download.decompress_all" title="Permalink to this definition">¶</a></dt>
+<dd><p>Takes a download object and processes as needed.
+We build an object tree using objects with an extracted
+path set to indicate final rom files vs without being
+files of a further compressed file. the list of files
+contained within this parent is stored as a list of
+inner object types within the self.inner_objects.
+Once rom vs rar is determined, recurse if needed. After
+this the inner_files can of self can be walked for a
+file tree.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>path</strong> &#8211; Path to temporary directory for extraction and storage.</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.Download.download">
+<code class="descname">download</code><span class="sig-paren">(</span><em>path</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Download.download"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Download.download" title="Permalink to this definition">¶</a></dt>
+<dd><p>Downloads self.uri into path+self.compressed, or path+basename(self.uri)</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>path</strong> &#8211; Path to temporary directory for extraction and storage.</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.Download.is_rom">
+<code class="descname">is_rom</code><span class="sig-paren">(</span><em>f_name=''</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Download.is_rom"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Download.is_rom" title="Permalink to this definition">¶</a></dt>
+<dd><p>Checks f_name for matches of self.extensions</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>f_name</strong> &#8211; Filename string to be matched against</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns bool:</th><td class="field-body">Result of matching</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.Download.ungz">
+<code class="descname">ungz</code><span class="sig-paren">(</span><em>member</em>, <em>path</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Download.ungz"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Download.ungz" title="Permalink to this definition">¶</a></dt>
+<dd><p>Gzip decompresses self.compressed for internal object using member as path for finding and writing output.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>member</strong> &#8211; Name of object within self.compressed to be extracted and written to as path+this</li>
+<li><strong>path</strong> &#8211; Path to temporary directory for extraction and storage.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.Download.unlzma">
+<code class="descname">unlzma</code><span class="sig-paren">(</span><em>path</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Download.unlzma"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Download.unlzma" title="Permalink to this definition">¶</a></dt>
+<dd><p>Currently, treats self.compressed as though it has a single file within and writes to self.path.
+Should be, reads self.compressed for member writing to path+member</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>member</strong> &#8211; Name of object within self.compressed to be extracted and written to as path+this</li>
+<li><strong>path</strong> &#8211; Path to temporary directory for extraction and storage.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.Download.untar">
+<code class="descname">untar</code><span class="sig-paren">(</span><em>member</em>, <em>path</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Download.untar"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Download.untar" title="Permalink to this definition">¶</a></dt>
+<dd><p>Untars member from self.compressed to path+member.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>member</strong> &#8211; Name of object within self.compressed to be extracted and written to as path+this</li>
+<li><strong>path</strong> &#8211; Path to temporary directory for extraction and storage.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.Download.unzip">
+<code class="descname">unzip</code><span class="sig-paren">(</span><em>path</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#Download.unzip"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.Download.unzip" title="Permalink to this definition">¶</a></dt>
+<dd><p>Presently extracts all members of a zip to path.
+Should extract a given member from self being a zip to path.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>member</strong> &#8211; Name of object within self.compressed to be extracted and written to as path+this</li>
+<li><strong>path</strong> &#8211; Path to temporary directory for extraction and storage.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="build.SdCard">
+<em class="property">class </em><code class="descclassname">build.</code><code class="descname">SdCard</code><span class="sig-paren">(</span><em>dev='/dev/sdc', mount='/mnt/rpi', fs='ext4', dir=['/mnt/rpi', '/tmp/rpi-tmp']</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#SdCard"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.SdCard" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>SdCard stores paths and details about the raw sd card and mount points used for writing the retropie image and roms.</p>
+<dl class="method">
+<dt id="build.SdCard.mk_dirs">
+<code class="descname">mk_dirs</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#SdCard.mk_dirs"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.SdCard.mk_dirs" title="Permalink to this definition">¶</a></dt>
+<dd><p>Creates temp and root mount point directories if not already created. Leverages self._mk_dir().
+Works on linux, should be cross compat. TEST</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.SdCard.mount">
+<code class="descname">mount</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#SdCard.mount"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.SdCard.mount" title="Permalink to this definition">¶</a></dt>
+<dd><p>Uses internal values to mount root and boot partitions of sdcard.
+Linux specific, needs windows/osx.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.SdCard.rescan_drive">
+<code class="descname">rescan_drive</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#SdCard.rescan_drive"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.SdCard.rescan_drive" title="Permalink to this definition">¶</a></dt>
+<dd><p>Issues operating system specific commands to rescan partitions after writig of image or resize.
+Linux specific, needs windows/osx.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.SdCard.resize_drive">
+<code class="descname">resize_drive</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#SdCard.resize_drive"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.SdCard.resize_drive" title="Permalink to this definition">¶</a></dt>
+<dd><p>Resizes second partition to full size of remaining sdcard.
+Linux specific, needs windows/osx</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.SdCard.rm_dirs">
+<code class="descname">rm_dirs</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#SdCard.rm_dirs"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.SdCard.rm_dirs" title="Permalink to this definition">¶</a></dt>
+<dd><p>Removes dirs created with self.mk_dirs()
+Works on linux, should be cross compat. TEST</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.SdCard.umount">
+<code class="descname">umount</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#SdCard.umount"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.SdCard.umount" title="Permalink to this definition">¶</a></dt>
+<dd><p>Uses interal values to unmount root and boot partitions of sdcard.
+Linux specific, needs windows/osx.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="build.SdCard.write_img">
+<code class="descname">write_img</code><span class="sig-paren">(</span><em>img='/tmp/rpi-tmp/retropie.img'</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#SdCard.write_img"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.SdCard.write_img" title="Permalink to this definition">¶</a></dt>
+<dd><p>Block level write of img to self.dev. Needs to be rescanned and resized prior to rom addition.
+Works on windows and linux, needs osx testing but should work.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>img</strong> &#8211; Path to image for writing to sdcard.</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="function">
+<dt id="build.main">
+<code class="descclassname">build.</code><code class="descname">main</code><span class="sig-paren">(</span><em>argv</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#main"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.main" title="Permalink to this definition">¶</a></dt>
+<dd><p>Execute as arguments indicated by cli.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>argv</strong> &#8211; sys.argv array for parsing.</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="build.parse_args">
+<code class="descclassname">build.</code><code class="descname">parse_args</code><span class="sig-paren">(</span><em>args=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/build.html#parse_args"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#build.parse_args" title="Permalink to this definition">¶</a></dt>
+<dd><p>Parse commandline arguments. Natively handles help. Commandline arguments superscede config options.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>args</strong> &#8211; Argv</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper"><div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="index.html">Documentation overview</a><ul>
+  </ul></li>
+</ul>
+</div>
+  <div role="note" aria-label="source link">
+    <h3>This Page</h3>
+    <ul class="this-page-menu">
+      <li><a href="_sources/build.txt"
+            rel="nofollow">Show Source</a></li>
+    </ul>
+   </div>
+<div id="searchbox" style="display: none" role="search">
+  <h3>Quick search</h3>
+    <form class="search" action="search.html" method="get">
+      <div><input type="text" name="q" /></div>
+      <div><input type="submit" value="Go" /></div>
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &copy;2016, Spenser Reinhardt.
+      
+      |
+      Powered by <a href="http://sphinx-doc.org/">Sphinx 1.4.6</a>
+      &amp; <a href="https://github.com/bitprophet/alabaster">Alabaster 0.7.9</a>
+      
+      |
+      <a href="_sources/build.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

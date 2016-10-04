@@ -5,6 +5,7 @@ import subprocess, ctypes
 import tarfile, shutil, zipfile, lzma, gzip
 import argparse, json, magic, logging
 import urllib.request, hashlib
+from enum import Enum
 
 VERSION = "0.0.1"
 
@@ -30,7 +31,7 @@ tmp_dir = [rpi_root, tmp_d]
 # regular expressions
 RE_DEV_BASE = re.compile("(?<=/dev/)\w+") # SdCard::{rescan_drive,resize_drive}
 RE_COMPRESSED = re.compile('\/(?P<cmp>[^\/]+)$') # Download::get_emulators()
-RE_EXTRACTED = re.compile('(?P<ext>[^\.]+)\.[^\.]+$') # Download::get_emulators()
+RE_EXTRACTED = re.compile('(?P<file>.+)\.[^\.]{2,4}$') # Download::remove_ext()
 
 class SdCard():
   """
@@ -169,6 +170,36 @@ class Download():
   
   Once recursively extracted a tree of Download objects should exist within self.inner_files. Leaves should have self.extracted set to a single file or directory. They are files which either match the self.file_order expressions, or are unable to be decompressed further. Branches will have further Download objects listed within inner_Files, although they may only have been extracted and not downloaded directly. Branches are either the top level compressed file or each compressed file extracted from a previous layer of compressed Download objects.
   '''
+  class FileType(enum):
+    '''
+    Internal class holding filetype of this Download object.
+    '''
+    gzip = 1
+    xz = 2
+    p7zip = 3
+    tar = 4
+    zip = 5
+    unknown = 99
+    
+    def get_filetype(path):
+      '''
+      Returns specific variant matching path's filetype.
+      
+      :param path: Full path of file to identify.
+      '''
+      logging.info("Finding filetype of {}".format(path+self.compressed))
+      ty = ""
+      with magic.Magic(flags=magic.MAGIC_MIME_TYPE) as m:
+        ty = m.id_filename(path+self.compressed)
+      sw = {
+        base+'x-gzip': FileType.gzip,
+        base+'x-xz': FileType.xz,
+        base+'x-7z-compressed': FileType.p7zip,
+        base+'x-tar': FileType.tar,
+        base+'zip': FileType.zip
+      }
+      return sw.get(ty, FileType.unknown)
+  
   def __init__(self, uri=None, compressed=None, extracted=None, rm_extracted=False, md5=None, file_order=[]):
     '''
     Initializes a Download object
@@ -187,7 +218,8 @@ class Download():
     self.file_order = file_order
     self.is_extracted = False
     self.md5 = md5
-    
+    self.type = FileType.get_filetype(self.compressed)
+  
   def download(self, path):
     '''
     Downloads self.uri into path+self.compressed, or path+basename(self.uri)
@@ -215,73 +247,103 @@ class Download():
       if ext.match(f_name) is not None:
         return True
     return False
-
+  
+  def lstar(self, path):
+    '''
+    Lists files within a tar archive.
+    '''
+    logging.info("Entering lstar for {}".format(path+self.compressed))
+    ls = list()
+    with tarfile.TarFile(path+self.compressed, 'r') as tar:
+      ls = tar.getnames()
+    return ls
+  
+  def lszip(self, path):
+    '''
+    Lists files within a zip archive.
+    '''
+    logging.info("Entering lszip for {}".format(path+self.compressed))
+    ls = list()
+    with zipfile.ZipFile(path+self.compressed, 'r') as zf:
+      ls = zf.namelist()
+    return ls
+  
+  def remove_ext(self):
+    '''
+    Removes the right most extension from self.compressed and returns as a list. If the regex does not match, returns None. Used to "list" inner files of xz and gzip files.
+    '''
+    logging.info("Entering remove_ext for {}".format(self.compressed))
+    name = RE_EXTRACTED.match(self.compressed).group("file")
+    if name is None:
+      return None
+    return list(name)
+  
+  def get_inner_files(self, path):
+    '''
+    Uses self.type to list files within self.compressed. If type is gzip or xz, the current extension will be removed, such that file.tar.gz will become file.tar, just as gunzip and like, would normally do.
+    
+    :param path: Temporary path location.
+    '''
+    logging.info("Entering get_inner_files for type {} at file {}".format(str(self.type), path+self.compressed))
+    sw = {
+      FileType.tar: self.lstar,
+      FileType.gzip: self.remove_ext,
+      FileType.xz: self.remove_ext,
+      FileType.p7zip: None,
+      FileType.zip: self.lszip
+      # FileType.unknown: should be rom
+    }
+    if self.type in sw.keys():
+      fn = sw.get(self.type)
+      ret = fn(member, path)
+    else:
+      logging.info("found unknown type: {} for file: {}".format(str(self.type), path+member))
+      ret = None
+    return ret
+  
   def untar(self, member, path):
     '''
-    Untars member from self.compressed to path+member.
+    Untars member from self.compressed, outputs to path+member.
     
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     '''
     logging.info("Untar file: {} to: {}".format(path+self.compessed,path+self.extracted))
-    with tarfile.open(path+self.compressed) as tar:
+    with tarfile.TarFile(path+self.compressed) as tar:
       with tar.extractfile(member) as xtar, open(path+member, 'w+') as fout:
         fout.write(xtar.read())
   
-  def unzip(self, path):
+  def unzip(self, member, path):
     '''
-    Presently extracts all members of a zip to path.
-    Should extract a given member from self being a zip to path.
+    Opens self.compressed for extraction of member to path+member.
     
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     '''
-    logging.info("Unzip file: {} to: {}".format(path+self.compessed,path+self.extracted))
-    filelist = []
-    with zipfile.ZipFile(self.compressed) as zf:
-      filelist = zf.infolist()
-      for member in filelist:
-        # Path traversal defense copied from
-        # http://hg.python.org/cpython/file/tip/Lib/http/server.py#l789
-        words = member.filename.split('/')
-        epath = path+self.extracted
-        for word in words[:-1]:
-          while True:
-            drive, word = os.path.splitdrive(word)
-            head, word = os.path.split(word)
-            if not drive:
-              break
-            if word in (os.curdir, os.pardir, ''):
-              continue
-            epath = os.path.join(epath, word)
-        zf.extract(member, epath)
-    self.inner_files = filelist
+    logging.info("Unzip file: {} to: {}".format(path+self.compessed,pathmember))
+    with zipfile.ZipF(self.compressed) as zf, open(path+member, 'wb') as fout:
+      zf.extract(member, path+member)
   
-  def unlzma(self, path):
+  def unlzma(self, member, path):
     '''
-    Currently, treats self.compressed as though it has a single file within and writes to self.path.
-    Should be, reads self.compressed for member writing to path+member
+    Extracts self.compressed into member+path. Xz compression has no idea of files, so hopefully one tars any sequential files first. This intends read from and to single but separate files.
     
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     '''
-    logging.info("Unlzma file: {} to: {}".format(path+self.compessed,path+self.extracted))
-    cpath=path+self.compressed
-    epath=path+self.extracted
-    with lzma.open(cpath) as fin, open(epath, 'wb') as fout:
+    logging.info("Unlzma file: {} to: {}".format(path+self.compessed,path+member))
+    with lzma.open(path+self.compressed) as fin, open(path+member, 'wb') as fout:
       fout.write(fin.read())
   
   def ungz(self, member, path):
     '''
-    Gzip decompresses self.compressed for internal object using member as path for finding and writing output.
+    Gzip decompresses self.compressed writing to path+member. Gzip compression much like xz, has no real idea of files. This intends read from and to single but separate files.
     
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     '''
     logging.info("Ungz file: {} to: {}".format(path+self.compressed,path+member))
-    cpath=path+member
-    epath=path+member
-    with gzip.open(cpath, 'rb') as fin, open(epath, 'wb') as fout:
+    with gzip.open(path+self.compressed, 'rb') as fin, open(path+member, 'wb') as fout:
       fout.write(fin.read())
   
   def decompress(self, member, path):
@@ -294,19 +356,16 @@ class Download():
     :param path: Path to temporary directory for extraction and storage.
     """
     logging.info("Starting magic based decompression")
-    base = "application/"
-    ty = ""
-    with magic.Magic(flags=magic.MAGIC_MIME_TYPE) as m:
-      ty = m.id_filename(path+member)
     sw = {
-      base+'x-tar': self.untar,
-      base+'x-gzip': self.ungz,
-      base+'x-xz': self.unlzma,
-      base+'x-7z-compressed': None,
-      base+'zip': self.unzip
+      FileType.tar: self.untar,
+      FileType.gzip: self.ungz,
+      FileType.xz: self.unlzma,
+      FileType.p7zip: None,
+      FileType.zip: self.unzip
+      # FileType.unknown: should be rom
     }
-    if ty in sw.keys():
-      fn = sw.get(ty)
+    if self.type in sw.keys():
+      fn = sw.get(self.type)
       fn(member, path)
     else:
       logging.info("found unknown type: {} for file: {}".format(ty, path+member))
@@ -351,7 +410,6 @@ class Download():
         i_f.decompress_all(path)
     if self.rm:
       self.delete(path)
-    
 
 class Config():
   '''

@@ -170,7 +170,7 @@ class Download():
   
   Once recursively extracted a tree of Download objects should exist within self.inner_files. Leaves should have self.extracted set to a single file or directory. They are files which either match the self.file_order expressions, or are unable to be decompressed further. Branches will have further Download objects listed within inner_Files, although they may only have been extracted and not downloaded directly. Branches are either the top level compressed file or each compressed file extracted from a previous layer of compressed Download objects.
   '''
-  class FileType(enum):
+  class FileType(Enum):
     '''
     Internal class holding filetype of this Download object.
     '''

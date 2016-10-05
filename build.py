@@ -11,9 +11,8 @@ VERSION = "0.0.1"
 
 # bitflags for command line opts
 EF_NO_FLAGS = 0
-EF_PARSE_CONFIG = 1
-EF_IMAGE_SDCARD = 2
-EF_INSTALL_ROMS = 4
+EF_IMAGE_SDCARD = 1
+EF_INSTALL_ROMS = 2
 EF_MAX_FLAGS = 255
 
 # commented lines are for notation, handled within __init__()'s
@@ -120,8 +119,7 @@ class SdCard():
     :param img: Path to image for writing to sdcard.
     """
     logging.info("Writing image")
-    with open(img, "rb") as in_file:
-      with open(self.dev, "w+b") as out_file:
+    with open(self.tmp_dir+img, "rb") as in_file, open(self.dev, "w+b") as out_file:
         out_file.write(in_file.read())
   
   def _mk_dir(self, path):
@@ -164,41 +162,44 @@ class SdCard():
         logging.error("Failed to remove temp dir {}.".format(path))
         pass
 
+class FileType(Enum):
+  '''
+  Internal class holding filetype of this Download object.
+  '''
+  gzip = 1
+  xz = 2
+  p7zip = 3
+  tar = 4
+  zip = 5
+  unknown = 99
+  
+  def get_filetype(path):
+    '''
+    Returns specific variant matching path's filetype.
+    
+    :param path: Full path of file to identify.
+    '''
+    logging.info("Finding filetype of {}".format(path))
+    base = 'application/'
+    ty = ""
+    with magic.Magic(flags=magic.MAGIC_MIME_TYPE) as m:
+      ty = m.id_filename(path)
+    logging.debug("Found {}".format(ty))
+    sw = {
+      base+'x-gzip': FileType.gzip,
+      base+'x-xz': FileType.xz,
+      base+'x-7z-compressed': FileType.p7zip,
+      base+'x-tar': FileType.tar,
+      base+'zip': FileType.zip
+    }
+    return sw.get(ty, FileType.unknown)
+
 class Download():
   '''
   Download objects are used to track a single file from download through multiple levels of extraction. Depending on options set, they may leverage previously downloaded or extracted files. While not explicitly necessary, Download objects are expected to be extracted at least once prior to checking for rom extensions and copying to the sdcard.
   
   Once recursively extracted a tree of Download objects should exist within self.inner_files. Leaves should have self.extracted set to a single file or directory. They are files which either match the self.file_order expressions, or are unable to be decompressed further. Branches will have further Download objects listed within inner_Files, although they may only have been extracted and not downloaded directly. Branches are either the top level compressed file or each compressed file extracted from a previous layer of compressed Download objects.
   '''
-  class FileType(Enum):
-    '''
-    Internal class holding filetype of this Download object.
-    '''
-    gzip = 1
-    xz = 2
-    p7zip = 3
-    tar = 4
-    zip = 5
-    unknown = 99
-    
-    def get_filetype(path):
-      '''
-      Returns specific variant matching path's filetype.
-      
-      :param path: Full path of file to identify.
-      '''
-      logging.info("Finding filetype of {}".format(path+self.compressed))
-      ty = ""
-      with magic.Magic(flags=magic.MAGIC_MIME_TYPE) as m:
-        ty = m.id_filename(path+self.compressed)
-      sw = {
-        base+'x-gzip': FileType.gzip,
-        base+'x-xz': FileType.xz,
-        base+'x-7z-compressed': FileType.p7zip,
-        base+'x-tar': FileType.tar,
-        base+'zip': FileType.zip
-      }
-      return sw.get(ty, FileType.unknown)
   
   def __init__(self, uri=None, compressed=None, extracted=None, rm_extracted=False, md5=None, file_order=[]):
     '''
@@ -218,7 +219,14 @@ class Download():
     self.file_order = file_order
     self.is_extracted = False
     self.md5 = md5
-    self.type = FileType.get_filetype(self.compressed)
+    self.type = FileType.unknown
+  
+  def set_filetype(self, path):
+    '''
+    Checks self.compressed for filetype.
+    '''
+    logging.debug("Setting filetype")
+    self.type = FileType.get_filetype(path+self.compressed)
   
   def download(self, path):
     '''
@@ -231,10 +239,12 @@ class Download():
     if os.access(path+self.compressed, mode=4) and self.md5 is not None:
       md5 = hashlib.md5(open(path+self.compressed, "rb").read()).hexdigest()
       if md5 == self.md5:
+        self.set_filetype(path)
         return
     # no existing file, or not matching sum
     with urllib.request.urlopen(self.uri, timeout=300) as response, open(path+self.compressed, 'wb') as out_file:
       shutil.copyfileobj(response, out_file)
+    self.set_filetype(path)
   
   def is_rom(self, f_name=""):
     '''
@@ -284,7 +294,7 @@ class Download():
     
     :param path: Temporary path location.
     '''
-    logging.info("Entering get_inner_files for type {} at file {}".format(str(self.type), path+self.compressed))
+    logging.info("Entering get_inner_files for type {} at file {}".format(str(self.type), self.compressed))
     sw = {
       FileType.tar: self.lstar,
       FileType.gzip: self.remove_ext,
@@ -297,7 +307,7 @@ class Download():
       fn = sw.get(self.type)
       ret = fn(member, path)
     else:
-      logging.info("found unknown type: {} for file: {}".format(str(self.type), path+member))
+      logging.info("found unknown type: {} for file: {}".format(str(self.type), member))
       ret = None
     return ret
   
@@ -308,7 +318,7 @@ class Download():
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     '''
-    logging.info("Untar file: {} to: {}".format(path+self.compessed,path+self.extracted))
+    logging.info("Untar file: {} to: {}".format(self.compessed, member))
     with tarfile.TarFile(path+self.compressed) as tar:
       with tar.extractfile(member) as xtar, open(path+member, 'w+') as fout:
         fout.write(xtar.read())
@@ -320,7 +330,7 @@ class Download():
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     '''
-    logging.info("Unzip file: {} to: {}".format(path+self.compessed,pathmember))
+    logging.info("Unzip file: {} to: {}".format(self.compessed, pathmember))
     with zipfile.ZipF(self.compressed) as zf, open(path+member, 'wb') as fout:
       zf.extract(member, path+member)
   
@@ -331,7 +341,7 @@ class Download():
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     '''
-    logging.info("Unlzma file: {} to: {}".format(path+self.compessed,path+member))
+    logging.info("Unlzma file: {} to: {}".format(self.compessed, member))
     with lzma.open(path+self.compressed) as fin, open(path+member, 'wb') as fout:
       fout.write(fin.read())
   
@@ -342,7 +352,7 @@ class Download():
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     '''
-    logging.info("Ungz file: {} to: {}".format(path+self.compressed,path+member))
+    logging.info("Ungz file: {} to: {}".format(self.compressed, member))
     with gzip.open(path+self.compressed, 'rb') as fin, open(path+member, 'wb') as fout:
       fout.write(fin.read())
   
@@ -368,7 +378,7 @@ class Download():
       fn = sw.get(self.type)
       fn(member, path)
     else:
-      logging.info("found unknown type: {} for file: {}".format(ty, path+member))
+      logging.info("found unknown type: {} for file: {}".format(str(self.type), member))
   
   def decompress_all(self, path):
     """
@@ -438,7 +448,7 @@ class Config():
     '''
     sdcard = SdCard(dev=self.sdcard.get("dev_path"),
       mount=self.sdcard.get("mount_path"), fs=self.sdcard.get("filesystem"),
-      dirs=self.sdcard.get("temp_path"))
+      dir=self.sdcard.get("temp_path"))
     if args.sdcard is "" and 0 < len(args.sdcard) and len(args.sdcard) <= 255:
       sdcard.dev = args.sdcard
       sdcard.dev_boot = args.sdcard+"1"
@@ -465,7 +475,7 @@ class Config():
     '''
     Generates a list of Download objects, set such that they will search internally and build the inner_files tree as needed.
     '''
-    logging.debug("Entered get_emulators() with path: {}".format(path))
+    logging.debug("Entered get_emulators()")
     emulators = []
     for name, settings in self.emulators.items():
       if settings.get("cp_to_sd") == True:
@@ -473,41 +483,53 @@ class Config():
         cmp = RE_COMPRESSED.match(settings.get("rom_uris")).group("cmp") # not working with arrays of uris, also how to handle them...
         f_o = [ re.compile('.+\.'+ext+'$') for ext in settings.get("extensions") ]
         emulators.append(Download(
-                      uri=settings.get("rom_uris"),
+                      uri=settings.get("rom_uris",None),
                       compressed=cmp,
-                      get_all=settings.get("dl_all_b4_extract"),
+                      get_all=settings.get("dl_all_b4_extract",True),
                       file_order=f_o))
 
-def parse_args(args=None):
+# MAIN
+def parse_args(args=None, logger=None):
   '''
   Parse commandline arguments. Natively handles help. Commandline arguments superscede config options.
   
   :param args: Argv
   '''
-  parser = argparse.ArgumentParser(description="RetroPie Image Builder {}".format(VERSION))
+  parser = argparse.ArgumentParser(description="RetroPie Image Builder {}"+VERSION)
   parser.add_argument("-c", "--config", type=str, required=True, help="Path to configuration file.")
   parser.add_argument("-s", "--sdcard", type=str, required=False, help="Path to sdcard device.")
   parser.add_argument("-m", "--mount", type=str, required=False, help="Mountpoint for sdcard.")
   parser.add_argument("-t", "--temp", type=str, required=False,
     help="Path to temporary directory for downloads and extraction")
   parser.add_argument("-v", "--verbose", action="count", required=False, help="Verbose output.")
-  parser.add_argument("--parse-config", action="count", required=False, help="total_options+=parse config only")
-  parser.add_argument("--image-sdcard", action="count", required=False, help="total_options+=download, extract, and image retropie onto sdcard")
-  parser.add_argument("--install-roms", action="count", required=False, help="total_options+=download, extract and cp roms, mount and unmount sdcard")
+  parser.add_argument("--image_sdcard", action="store_const", const=True, required=False, help="total_options+=download, extract, and image retropie onto sdcard")
+  parser.add_argument("--install_roms", action="store_const", const=True, required=False, help="total_options+=download, extract and cp roms, mount and unmount sdcard")
   args = parser.parse_args(args)
+  
+  logging.debug(args)
   
   if not args.config:
     print("Please specify a configuration file")
     print_help(1)
   
+  if args.verbose:
+    sw = {
+      0: logging.NOTSET,
+      1: logging.INFO,
+      2: logging.DEBUG,
+    }
+    args.verbose = args.verbose if args.verbose <= 2 else 2
+    logger.setLevel(level=sw.get(args.verbose, logging.NOTSET))
+  
   execute_flag = EF_NO_FLAGS
-  if args.parse-config and 0 <= args.parse-config:
-    execute_flag &= EF_PARSE_CONFIG
-  if args.image-sdcard and 0 <= args.image-sdcard:
-    execute_flag &= EF_IMAGE_SDCARD
-  if args.install-roms and 0 <= args.install-roms:
-    execute_flag &= EF_INSTALL_ROMS
+  if args.image_sdcard:
+    logging.debug("Setting image_sdcard")
+    execute_flag |= EF_IMAGE_SDCARD
+  if args.install_roms:
+    logging.debug("Setting install_roms")
+    execute_flag |= EF_INSTALL_ROMS
   if execute_flag == EF_NO_FLAGS:
+    logging.debug("Setting max_flags")
     execute_flag = EF_MAX_FLAGS # way more than any unique flags we would need... hopefully
   logging.debug("Generated execute flag: {}".format(execute_flag))
   args.e_flag = execute_flag
@@ -520,28 +542,20 @@ def main(argv):
   
   :param argv: sys.argv array for parsing.
   '''
-  args = parse_args(argv)
-  if args.verbose:
-    print("got verbose {}", args.verbose)
-    sw = {
-      0: logging.NOTSET,
-      1: logging.INFO,
-      2: logging.CRITICAL,
-    }
-    args.verbose = args.verbose if args.verbose <= 2 else 2
-    logging.basicConfig(level=sw.get(args.verbose),
-                      format='%(levelname)-8s %(message)s',
-                      datefmt='%m-%d %H:%M')
+  logging.basicConfig(format='%(levelname)s|%(funcName)s|%(lineno)s| %(message)s', datefmt='%m-%d %H:%M')
+  rootLogger = logging.getLogger()
+  rootLogger.setLevel(logging.DEBUG)
   
-  if (args.e_flag & EF_PARSE_CONFIG) == EF_PARSE_CONFIG:
-    config = Config(args.config)
-    sdcard = config.get_sdcard(args)
-    retropie = config.get_retropie()
-    emulators = config.get_emulators(sdcard.tmp_dir)
+  args = parse_args(argv, rootLogger)
+  config = Config(args.config)
+  sdcard = config.get_sdcard(args)
+  retropie = config.get_retropie()
+  emulators = config.get_emulators()
+  
   if (args.e_flag & EF_IMAGE_SDCARD) == EF_IMAGE_SDCARD:
-    sdcard.mk_dirs(sdcard.tmp_dir)
+    sdcard.mk_dirs()
     retropie.download(sdcard.tmp_dir)
-    retropie.decompress(sdcard.tmp_dir)
+    retropie.decompress(retropie.extracted, sdcard.tmp_dir)
     sdcard.write_img(retropie.extracted)
     
     try:
@@ -563,12 +577,15 @@ def main(argv):
       print(e)
       return 1
     
-    for emulator in emulators:
-      emulator.download()
-      emulator.decompress()
-      emulator.cp_to_sd()
+    if emulators is None:
+      logging.warning("Attempted to install roms with no roms in config.")
+    else:
+      for emulator in emulators:
+        emulator.download(sdcard.tmp_dir)
+        emulator.decompress_all(sdcard.tmp_dir)
+        #emulator.cp_to_sd()
     
-    sdcard.unmount()
+    sdcard.umount()
   
   later = """
     handle more errors

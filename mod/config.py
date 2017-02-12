@@ -6,6 +6,8 @@ from .download import Download
 from .emulator import Emulator
 from .sdcard import SdCard
 
+logger = logging.getLogger(__name__)
+
 RE_COMPRESSED = re.compile('\/(?P<cmp>[^\/]+)$') # Download::get_emulators()
 
 class Config():
@@ -36,14 +38,14 @@ class Config():
     sdcard = SdCard(dev=self.sdcard.get("dev_path"),
       mount=self.sdcard.get("mount_path"), fs=self.sdcard.get("filesystem"),
       dir=self.sdcard.get("temp_path"))
-    if args.sdcard is "" and 0 < len(args.sdcard) and len(args.sdcard) <= 255:
+    if isinstance(args.sdcard,str) and 0 < len(args.sdcard) and len(args.sdcard) <= 255:
       sdcard.dev = args.sdcard
       sdcard.dev_boot = args.sdcard+"1"
       sdcard.dev_root = args.sdcard+"2"
-    if args.mount is "" and 0 < len(args.mount) and len(args.mount) <= 255:
+    if isinstance(args.mount,str) and 0 < len(args.mount) and len(args.mount) <= 255:
       sdcard.mount_root = args.mount
       sdcard.mount_boot = args.mount+"/boot"
-    if args.temp is "" and 0 < len(args.temp) and len(args.temp) <= 255:
+    if isinstance(args.temp,str) and 0 < len(args.temp) and len(args.temp) <= 255:
       sdcard.tmp_dir = args.temp
     return sdcard
   
@@ -53,7 +55,7 @@ class Config():
     '''
     return Download(
       uri=self.retropie.get("uri"),
-      compressed=self.retropie.get("compressed_path")[0],
+      compressed=self.retropie.get("compressed_path"),
       extract=True,
       md5=self.retropie.get("md5") )
   
@@ -61,11 +63,11 @@ class Config():
     '''
     Generates a list of Download objects, set such that they will search internally and build the inner_files tree as needed.
     '''
-    logging.debug("Entered get_emulators()")
+    logger.debug("Entered get_emulators()")
     emulators = []
     for name, settings in self.emulators.items():
       if name is not None and settings is not None and settings.get("cp_to_sd") == True:
-        logging.debug("rom_uris: {} sub_cmp: ".format(settings.get("rom_uris")))
+        logger.debug("rom_uris: {} sub_cmp: ".format(settings.get("rom_uris")))
         cmp = []
         emulator = Emulator(
             name,
@@ -87,7 +89,7 @@ class Config():
                       compressed=cmp,
                       file_order=f_o ))
           else:
-            logging.error("invalid uri found: {} - {}".format(cmp,uri))
+            logger.error("invalid uri found: {} - {}".format(cmp,uri))
         if 1 <= len(emulator.downloads):
             emulators.append(emulator)
     return emulators

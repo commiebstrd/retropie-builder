@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import logging, json
-import subprocess
+import subprocess, platform
 import sys, os, re, time
+
+logger = logging.getLogger(__name__)
 
 # commented lines are for notation, handled within __init__()'s
 sdcard = "/dev/sdc"
@@ -15,8 +17,6 @@ rpi_root = "/mnt/rpi"
 base_img = tmp_d + "/retropie.img"
 #base_gz = base_img + ".gz"
 tmp_dir = [rpi_root, tmp_d]
-
-RE_DEV_BASE = re.compile("(?<=/dev/)\w+") # SdCard::{rescan_drive,resize_drive}
 
 class SdCard():
   """
@@ -47,7 +47,7 @@ class SdCard():
     Issues operating system specific commands to rescan partitions after writig of image or resize.
     Linux specific, needs windows/osx.
     """
-    logging.info("Rescanning drive")
+    logger.info("Rescanning drive")
     sdx=RE_DEV_BASE.search(self.dev).group(0)
     path="/sys/block/" + sdx + "/device/rescan"
     print(sdx)
@@ -57,7 +57,7 @@ class SdCard():
       with open(path, "w+") as rescan:
         rescan.write("1")
     except PermissionError:
-      logging.error("Failed to write rescan on {}".format(sdx))
+      logger.error("Failed to write rescan on {}".format(sdx))
       pass
   
   def mount(self):
@@ -65,54 +65,60 @@ class SdCard():
     Uses internal values to mount root and boot partitions of sdcard.
     Linux specific, needs windows/osx.
     """
-    logging.info("Mounting sdcard")
-    logging.debug("Mounting {} to {}".format(self.dev_root,self.mount_root))
+    logger.info("Mounting sdcard")
+    logger.debug("Mounting {} to {}".format(self.dev_root,self.mount_root))
     try:
       subprocess.run("mount "+self.dev_root+" "+self.mount_root, shell=True, check=True)
     except subprocess.CalledProcessError as e:
       if e == 32:
-        logging.warning("Failed to mount rpi root, likely already mounted")
-    logging.debug("Mounting {} to {}".format(self.dev_boot,self.mount_boot))
+        logger.warning("Failed to mount rpi root, likely already mounted")
+    logger.debug("Mounting {} to {}".format(self.dev_boot,self.mount_boot))
     try:
       subprocess.run("mount "+self.dev_boot+" "+self.mount_boot, shell=True, check=True)
     except subprocess.CalledProcessError as e:
       if e == 32:
-        logging.warning("Failed to mount rpi root, likely already mounted")
+        logger.warning("Failed to mount rpi root, likely already mounted")
 
   def umount(self):
     """
     Uses interal values to unmount root and boot partitions of sdcard.
     Linux specific, needs windows/osx.
     """
-    logging.info("Unmounting sdcard")
-    logging.debug("Umounting {} from {}".format(self.dev_boot,self.mount_boot))
+    logger.info("Unmounting sdcard")
+    logger.debug("Umounting {} from {}".format(self.dev_boot,self.mount_boot))
     try:
       subprocess.run("umount "+self.mount_boot, shell=True, check=True)
     except subprocess.CalledProcessError as e:
-      logging.warning("Failed to unmount rpi boot!")
-    logging.debug("Umounting {} to {}".format(self.dev_root,self.mount_root))
+      logger.warning("Failed to unmount rpi boot!")
+    logger.debug("Umounting {} to {}".format(self.dev_root,self.mount_root))
     try:
       subprocess.run("umount "+self.mount_root, shell=True, check=True)
     except subprocess.CalledProcessError as e:
-        logging.warning("Failed to unmount rpi root!")
+        logger.warning("Failed to unmount rpi root!")
 
   def resize_drive(self):
     """
     Resizes second partition to full size of remaining sdcard.
     Linux specific, needs windows/osx
     """
-    logging.info("Resizing drive")
-    d_size=0
-    sdx=RE_DEV_BASE.search(self.dev).group(0)
-    s_path="/sys/block/"+sdx+"/size"
-    while not os.path.exists(s_path):
-      time.sleep(1)
-    with open(s_path, "r") as f:
-      d_size=int(f.read())
-    try:
-      subprocess.run("parted -m "+self.dev+" u s resizepart 2 "+str(d_size-1), shell=True, check=True)
-    except subprocess.CalledProcessError as e:
-      logging.warning("Failed to resize drive!")
+    logger.info("Resizing drive")
+    if platform.system() == "Linux":
+        d_size=0
+        dev_base = re.compile("(?<=/dev/((disk-by)[^/]*/)?)\w+")
+        sdx=dev_base.search(self.dev).group(0)
+        s_path="/sys/block/"+sdx+"/size"
+        while not os.path.exists(s_path): # inifinite loop on osx
+          time.sleep(1)
+        with open(s_path, "r") as f:
+          d_size=int(f.read())
+        try:
+          subprocess.run("parted -m {} u s resizepart 2 {}".format(self.dev,str(d_size-1)), shell=True, check=True)
+        except subprocess.CalledProcessError as e:
+          logger.warning("Failed to resize drive!")
+    else:
+        logger.error("Resize and futher operation not possible on OSX and Windows.")
+        return 1
+    return 0
   
   def write_img(self, img=base_img):
     """
@@ -121,7 +127,7 @@ class SdCard():
     
     :param img: Path to image for writing to sdcard.
     """
-    logging.info("Writing image")
+    logger.info("Writing image")
     with open(self.tmp_dir+img, "rb") as in_file, open(self.dev, "w+b") as out_file:
         out_file.write(in_file.read())
   
@@ -132,7 +138,7 @@ class SdCard():
     
     :param path: Path to temporary directory for extraction and storage.
     """
-    logging.info("Making {} dir".format(path))
+    logger.info("Making {} dir".format(path))
     try:
       os.makedirs(path)
     except FileExistsError as e:
@@ -157,10 +163,10 @@ class SdCard():
     Removes dirs created with self.mk_dirs()
     Works on linux, should be cross compat. TEST
     """
-    logging.info("Removing temp dir")
+    logger.info("Removing temp dir")
     for path in self.tmp_dir:
       try:
         os.rmdir(path)
       except OSError as e:	# Python >2.5
-        logging.error("Failed to remove temp dir {}.".format(path))
+        logger.error("Failed to remove temp dir {}.".format(path))
         pass

@@ -3,9 +3,12 @@
 import logging
 from enum import Enum
 import sys, os, re, time, shlex
+from progress.bar import Bar
 import urllib.request, hashlib
 import magic, subprocess, ctypes
 import tarfile, shutil, zipfile, lzma, gzip, rarfile
+
+logger = logging.getLogger(__name__)
 
 # regular expressions
 RE_EXTRACTED = re.compile('(?P<file>.+)\.[^\.]{2,4}$') # Download::remove_ext()
@@ -28,12 +31,12 @@ class FileType(Enum):
     
     :param path: Full path of file to identify.
     '''
-    logging.info("Finding filetype of {}".format(path))
+    logger.info("Finding filetype of {}".format(path))
     base = 'application/'
     ty = ""
     with magic.Magic(flags=magic.MAGIC_MIME_TYPE) as m:
       ty = m.id_filename(path)
-    logging.debug("Found {}".format(ty))
+    logger.debug("Found {}".format(ty))
     sw = {
       base+'x-gzip': FileType.gzip,
       base+'x-xz': FileType.xz,
@@ -76,7 +79,7 @@ class Download():
     '''
     Checks self.compressed for filetype.
     '''
-    logging.debug("Setting filetype")
+    logger.debug("Setting filetype")
     self.type = FileType.get_filetype(path+self.compressed)
   
   def download(self, path):
@@ -86,7 +89,7 @@ class Download():
     :param path: Path to temporary directory for extraction and storage.
     '''
     # Download the file from `url` and save it locally under `file_name`:
-    logging.info("Downloading file: {} from: {}".format(self.compressed, self.uri))
+    logger.info("Downloading file: {} from: {}".format(self.compressed, self.uri))
     if os.access(path+self.compressed, mode=4) and self.md5 is not None:
         md5 = hashlib.md5(open(path+self.compressed, "rb").read()).hexdigest()
         if md5 == self.md5:
@@ -98,9 +101,9 @@ class Download():
             shutil.copyfileobj(response, out_file)
     #self.set_filetype(path)
     except urllib.error.NameError:
-        logging.error("Uri appears invalid: {}".format(uri)); return
+        logger.error("Uri appears invalid: {}".format(uri)); return
     except urllib.error.HTTPError:
-        logging.error("Failed to download file: {}".format(uri)); return
+        logger.error("Failed to download file: {}".format(uri)); return
     self.set_filetype(path)
   
   def is_rom(self, f_name=""):
@@ -119,7 +122,7 @@ class Download():
     '''
     Lists files within a tar archive.
     '''
-    logging.info("Entering lstar for {}".format(path+self.compressed))
+    logger.info("Entering lstar for {}".format(path+self.compressed))
     ls = list()
     with tarfile.TarFile(path+self.compressed, 'r') as tar:
       ls = tar.getnames()
@@ -129,7 +132,7 @@ class Download():
     '''
     Lists files within a zip archive.
     '''
-    logging.info("Entering lszip for {}".format(path+self.compressed))
+    logger.info("Entering lszip for {}".format(path+self.compressed))
     ls = list()
     with zipfile.ZipFile(path+self.compressed, 'r') as zf:
       ls = zf.namelist()
@@ -137,21 +140,21 @@ class Download():
   
   def lsrar(self, path):
     print("Document lsrar()!")
-    logging.info("Entered lsrar for {}".format(path+self.compressed))
+    logger.info("Entered lsrar for {}".format(path+self.compressed))
     ls = list()
     with rarfile.RarFile(path+self.compressed) as rf:
         ls = rf.namelist()
     return ls
   
-  def remove_ext(self):
+  def remove_ext(self, void):
     '''
     Removes the right most extension from self.compressed and returns as a list. If the regex does not match, returns None. Used to "list" inner files of xz and gzip files.
     '''
-    logging.info("Entering remove_ext for {}".format(self.compressed))
+    logger.info("Entering remove_ext for {}".format(self.compressed))
     name = RE_EXTRACTED.match(self.compressed).group("file")
     if name is None:
       return None
-    return list(name)
+    return name
   
   def get_inner_files(self, path):
     '''
@@ -159,7 +162,7 @@ class Download():
     
     :param path: Temporary path location.
     '''
-    logging.info("Entering get_inner_files for type {} at file {}".format(str(self.type), self.compressed))
+    logger.info("Entering get_inner_files for type {} at file {}".format(str(self.type), self.compressed))
     sw = {
       FileType.tar: self.lstar,
       FileType.gzip: self.remove_ext,
@@ -173,7 +176,7 @@ class Download():
       fn = sw.get(self.type)
       ret = fn(path)
     else:
-      logging.info("found unknown type: {} for file: {}".format(str(self.type), self.compressed))
+      logger.info("found unknown type: {} for file: {}".format(str(self.type), self.compressed))
       ret = None
     return ret
   
@@ -184,7 +187,7 @@ class Download():
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     '''
-    logging.info("Untar file: {} to: {}".format(self.compessed, member))
+    logger.info("Untar file: {} to: {}".format(self.compessed, member))
     infile = shlex.quote("{}{}".format(path,self.compressed))
     outfile = shlex.quote("{}{}".format(path,member))
     with tarfile.TarFile(infile) as tar:
@@ -198,7 +201,7 @@ class Download():
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Temporary directory for extraction.
     '''
-    logging.info("Unzip file: {} to: {}".format(self.compessed, path+member))
+    logger.info("Unzip file: {} to: {}".format(self.compessed, path+member))
     infile = shlex.quote("{}{}".format(path,self.compressed))
     outfile = shlex.quote("{}{}".format(path,member))
     with zipfile.ZipFile(infile, 'r') as zf:
@@ -211,7 +214,7 @@ class Download():
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     '''
-    logging.info("Unlzma file: {} to: {}".format(self.compessed, member))
+    logger.info("Unlzma file: {} to: {}".format(self.compessed, member))
     infile = shlex.quote("{}{}".format(path,self.compressed))
     outfile = shlex.quote("{}{}".format(path,member))
     with lzma.open(infile) as fin, open(outfile, 'wb') as fout:
@@ -224,7 +227,7 @@ class Download():
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     '''
-    logging.info("Ungz file: {} to: {}".format(self.compressed, member))
+    logger.info("Ungz file: {} to: {}".format(self.compressed, member))
     infile = shlex.quote("{}{}".format(path,self.compressed))
     outfile = shlex.quote("{}{}".format(path,member))
     with gzip.open(infile, 'rb') as fin, open(outfile, 'wb') as fout:
@@ -232,7 +235,7 @@ class Download():
   
   def unrar(self, member, path):
     print("Document unrar()!")
-    logging.info("Unrar file: {} to: {} path: {}".format(self.compressed, member, path))
+    logger.info("Unrar file: {} to: {} path: {}".format(self.compressed, member, path))
     infile = shlex.quote("{}{}".format(path,self.compressed))
     outfile = shlex.quote(path)
     with rarfile.RarFile(infile) as rf:
@@ -247,7 +250,7 @@ class Download():
     :param member: Name of object within self.compressed to be extracted and written to as path+this
     :param path: Path to temporary directory for extraction and storage.
     """
-    logging.info("Starting magic based decompression")
+    logger.info("Starting magic based decompression")
     sw = {
       FileType.tar: self.untar,
       FileType.gzip: self.ungz,
@@ -261,7 +264,7 @@ class Download():
       fn = sw.get(self.type)
       fn(member, path)
     else:
-      logging.info("found unknown type: {} for file: {}".format(str(self.type), member))
+      logger.info("found unknown type: {} for file: {}".format(str(self.type), member))
   
   def decompress_all(self, path):
     """
@@ -277,7 +280,7 @@ class Download():
     
     :param path: Path to temporary directory for extraction and storage.
     """
-    logging.info("Starting decompress_all() on: {} in: {}".format(self.compressed, path))
+    logger.info("Starting decompress_all() on: {} in: {}".format(self.compressed, path))
     # get list of inner files for parsing
     list_t = self.get_inner_files(path)
     if not isinstance(list_t, list) or len(list_t) < 1:
@@ -304,28 +307,31 @@ class Download():
             dl_all=self.dl_all,
           ))
     # cycle through list of files within this compressed file and extract and continue building tree if needed
+    bar = Bar("Decompressing {}: ".format(self.compressed), max=len(self.inner_files))
     for i_f in self.inner_files:
+        bar.next()
         dirname = os.path.dirname(path+i_f.compressed)
         if not os.path.exists(dirname):
-            logging.info("Creating dir {}".format(dirname))
+            logger.info("Creating dir {}".format(dirname))
             os.makedirs(dirname)
         self.decompress(i_f.compressed, path)
         i_f.set_filetype(path)
         if i_f.extract: # indicates compressed file and should be extracted further
             i_f.decompress_all(path)
     self.is_extracted=True
+    bar.finish()
   
   def cp_to_sd(self, emulator, dlpath, sdpath):
     print("Document cp_to_sd()!")
     ROOT_TO_ROMS="/home/pi/RetroPie/roms/"
-    logging.info("Copy from {} to {} for {}".format(dlpath, sdpath, self.compressed))
+    logger.info("Copy from {} to {} for {}".format(dlpath, sdpath, self.compressed))
     if self.extract == False: # have rom, copy to sd
         src = dlpath+self.compressed # file
         dst = sdpath+ROOT_TO_ROMS+emulator+"/" # dir
         try:
             shutil.copy(src,dst)
         except OSError:
-            logging.error("Dst {} is not writeable".format(dst))
+            logger.error("Dst {} is not writeable".format(dst))
             return
     if isinstance(self.inner_files,list) and 1 <= len(self.inner_files):
         # recurse through extracted files

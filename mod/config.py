@@ -5,6 +5,7 @@ import sys, os, re, time
 from .download import Download
 from .emulator import Emulator
 from .sdcard import SdCard
+from .filter import Filters
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ class Config():
   def __init__(self, path=None):
     '''
     Initializes a Config object from the file provided byt path.
-    
+
     :params path: Path to configuration file
     '''
     if path is None:
@@ -28,16 +29,25 @@ class Config():
     self.sdcard = self.json.get("sdcard")
     self.retropie = self.json.get("retropie")
     self.emulators = self.json.get("emulators")
-  
+    self.filters = self.json.get("filters")
+
   def get_sdcard(self, args):
     '''
     Generates an SdCard object from internal jsons objects. Allows cli args to override config, if provided.
-    
+
     :params args: Argument structure provided buy parse_args().
     '''
-    sdcard = SdCard(dev=self.sdcard.get("dev_path"),
-      mount=self.sdcard.get("mount_path"), fs=self.sdcard.get("filesystem"),
-      dir=self.sdcard.get("temp_path"))
+    tpath = self.sdcard.get("temp_path")
+    if not tpath.endswith("/"):
+        tpath = tpath+"/"
+    mpath = self.sdcard.get("mount_path")
+    if not mpath.endswith("/"):
+        mpath = mpath+"/"
+    sdcard = SdCard(
+        dev=self.sdcard.get("dev_path"),
+        mount=mpath,
+        fs=self.sdcard.get("filesystem"),
+        dir=tpath)
     if isinstance(args.sdcard,str) and 0 < len(args.sdcard) and len(args.sdcard) <= 255:
       sdcard.dev = args.sdcard
       sdcard.dev_boot = args.sdcard+"1"
@@ -48,7 +58,7 @@ class Config():
     if isinstance(args.temp,str) and 0 < len(args.temp) and len(args.temp) <= 255:
       sdcard.tmp_dir = args.temp
     return sdcard
-  
+
   def get_retropie(self):
     '''
     Generates a Download object with for retropie image use. Specifically it sets extracted and compressed so we know it's a single extraction and the wanted output file.
@@ -56,9 +66,9 @@ class Config():
     return Download(
       uri=self.retropie.get("uri"),
       compressed=self.retropie.get("compressed_path"),
-      extract=True,
+      copy=True,
       md5=self.retropie.get("md5") )
-  
+
   def get_emulators(self):
     '''
     Generates a list of Download objects, set such that they will search internally and build the inner_files tree as needed.
@@ -70,13 +80,14 @@ class Config():
         logger.debug("rom_uris: {} sub_cmp: ".format(settings.get("rom_uris")))
         cmp = []
         emulator = Emulator(
-            name,
-            settings.get('rpi_path'),
-            [],
-            settings.get("dl_all_b4_extract"),
-            settings.get("rm_extracted"))
-        f_o = [ re.compile('.+\.'+ext+'$') for ext in settings.get("extensions") ]
-        for uri in settings.get("rom_uris"):
+            name=name,
+            path=settings.get('rpi_path'),
+            downloads=[],
+            dl_all=settings.get("dl_all_b4_extract"),
+            rm=settings.get("rm_extracted")
+          )
+        f_o=[ re.compile('.+\.'+ext+'$') for ext in settings.get("extensions") ]
+        for uri,md5 in zip(settings.get("rom_uris"),settings.get('md5')):
           # allow each uri as a dl obj by falling through building uri, cmp, and adding
           if uri:
             uri_re = RE_COMPRESSED.search(uri)
@@ -87,9 +98,18 @@ class Config():
             emulator.downloads.append(Download(
                       uri=uri,
                       compressed=cmp,
+                      md5=md5,
+                      filters=self.get_filters()
                       file_order=f_o ))
           else:
             logger.error("invalid uri found: {} - {}".format(cmp,uri))
         if 1 <= len(emulator.downloads):
             emulators.append(emulator)
     return emulators
+
+  def get_filters(self):
+    ret = list()
+    for name, setting in self.filters.items():
+        flr = Filters.fromstring(name) if setting else continue
+        ret.append(lr)
+    return ret

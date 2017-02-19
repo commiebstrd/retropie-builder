@@ -26,7 +26,7 @@ class SdCard():
     """
     Constructs a new SdCard object.
     Fairly linux specific, root/boot setting will need to be altered for windows at least.
-    
+
     :param dev: Base device path, /dev/sdb, E:\.
     :param mount: Root mount point for sdcards second partition.
     :param fs: Filesystem type of image being written, not entirely necessary.
@@ -41,13 +41,13 @@ class SdCard():
     self.tmp_dir = dir
     self.is_raw_dev = True
     self.is_root_mounted = False
-  
+
   def rescan_drive(self):
     """
     Issues operating system specific commands to rescan partitions after writig of image or resize.
     Linux specific, needs windows/osx.
     """
-    logger.info("Rescanning drive")
+    logger.debug("Rescanning drive")
     sdx=RE_DEV_BASE.search(self.dev).group(0)
     path="/sys/block/" + sdx + "/device/rescan"
     print(sdx)
@@ -59,13 +59,13 @@ class SdCard():
     except PermissionError:
       logger.error("Failed to write rescan on {}".format(sdx))
       pass
-  
+
   def mount(self):
     """
     Uses internal values to mount root and boot partitions of sdcard.
     Linux specific, needs windows/osx.
     """
-    logger.info("Mounting sdcard")
+    logger.debug("Mounting sdcard")
     logger.debug("Mounting {} to {}".format(self.dev_root,self.mount_root))
     try:
       subprocess.run("mount "+self.dev_root+" "+self.mount_root, shell=True, check=True)
@@ -84,7 +84,7 @@ class SdCard():
     Uses interal values to unmount root and boot partitions of sdcard.
     Linux specific, needs windows/osx.
     """
-    logger.info("Unmounting sdcard")
+    logger.debug("Unmounting sdcard")
     logger.debug("Umounting {} from {}".format(self.dev_boot,self.mount_boot))
     try:
       subprocess.run("umount "+self.mount_boot, shell=True, check=True)
@@ -101,10 +101,10 @@ class SdCard():
     Resizes second partition to full size of remaining sdcard.
     Linux specific, needs windows/osx
     """
-    logger.info("Resizing drive")
+    logger.debug("Resizing drive")
     if platform.system() == "Linux":
         d_size=0
-        dev_base = re.compile("(?<=/dev/((disk-by)[^/]*/)?)\w+")
+        dev_base = re.compile("(?<=/dev/)\w+")
         sdx=dev_base.search(self.dev).group(0)
         s_path="/sys/block/"+sdx+"/size"
         while not os.path.exists(s_path): # inifinite loop on osx
@@ -119,26 +119,26 @@ class SdCard():
         logger.error("Resize and futher operation not possible on OSX and Windows.")
         return 1
     return 0
-  
+
   def write_img(self, img=base_img):
     """
     Block level write of img to self.dev. Needs to be rescanned and resized prior to rom addition.
     Works on windows and linux, needs osx testing but should work.
-    
+
     :param img: Path to image for writing to sdcard.
     """
-    logger.info("Writing image")
+    logger.debug("Writing image")
     with open(self.tmp_dir+img, "rb") as in_file, open(self.dev, "w+b") as out_file:
         out_file.write(in_file.read())
-  
+
   def _mk_dir(self, path):
     """
     Internal general creation of directory function.
     Works on linux, should be agnostic. TEST
-    
+
     :param path: Path to temporary directory for extraction and storage.
     """
-    logger.info("Making {} dir".format(path))
+    logger.debug("Making {} dir".format(path))
     try:
       os.makedirs(path)
     except FileExistsError as e:
@@ -149,7 +149,7 @@ class SdCard():
         pass
       else:
         raise RuntimeError("Failed to create temp dir {}.".format(path))
-  
+
   def mk_dirs(self):
     """
     Creates temp and root mount point directories if not already created. Leverages self._mk_dir().
@@ -163,7 +163,7 @@ class SdCard():
     Removes dirs created with self.mk_dirs()
     Works on linux, should be cross compat. TEST
     """
-    logger.info("Removing temp dir")
+    logger.debug("Removing temp dir")
     for path in self.tmp_dir:
       try:
         os.rmdir(path)

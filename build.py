@@ -22,7 +22,7 @@ EF_MAX_FLAGS = 255
 def parse_args(args=None, logger=None):
   '''
   Parse commandline arguments. Natively handles help. Commandline arguments superscede config options.
-  
+
   :param args: Argv
   '''
   parser = argparse.ArgumentParser(description="RetroPie Image Builder {}"+VERSION)
@@ -37,13 +37,13 @@ def parse_args(args=None, logger=None):
   parser.add_argument("--ignore_mounts", action="store_const", const=True, required=False, help="Ignore mounting and unmounting of sdcard. Mainly used for execution local to a pi or testing.")
   parser.add_argument("-l", "--log_file", type=str, required=False, help="Logs to file provided instead of stdout")
   args = parser.parse_args(args)
-  
+
   logger.debug(args)
-  
+
   if not args.config:
     print("Please specify a configuration file")
     print_help(1)
-  
+
   if args.verbose:
     sw = {
       0: logging.NOTSET,
@@ -55,7 +55,7 @@ def parse_args(args=None, logger=None):
   if args.log_file:
       handler = logging.FileHandler(args.log_file)
       logger.addHandler(handler)
-  
+
   execute_flag = EF_NO_FLAGS
   if args.image_sdcard:
     logger.debug("Setting image_sdcard")
@@ -71,33 +71,33 @@ def parse_args(args=None, logger=None):
     execute_flag = EF_MAX_FLAGS # way more than any unique flags we would need... hopefully
   logger.debug("Generated execute flag: {}".format(execute_flag))
   args.e_flag = execute_flag
-  
+
   return args
 
 def main(argv):
   '''
   Execute as arguments indicated by cli.
-  
+
   :param argv: sys.argv array for parsing.
   '''
   logging.basicConfig(format='%(levelname)s|%(module)s::%(funcName)s|%(lineno)s| %(message)s', datefmt='%m-%d %H:%M')
   rootLogger = logging.getLogger()
   rootLogger.setLevel(logging.DEBUG)
-  
+
   args = parse_args(argv, rootLogger)
   config = Config(args.config)
   sdcard = config.get_sdcard(args)
   retropie = config.get_retropie()
   emulators = config.get_emulators()
-  
+
   sdcard.mk_dirs() # almost always need them, just create and remove when done
-  
+
   if (args.e_flag & EF_IMAGE_SDCARD) == EF_IMAGE_SDCARD:
-    
+
     retropie.download(sdcard.tmp_dir)
     name = retropie.remove_ext("void")
     retropie.decompress(name, sdcard.tmp_dir)
-    
+
     try:
         sdcard.write_img(name)
     except PermissionError as e:
@@ -106,7 +106,7 @@ def main(argv):
     except OSError:
         rootLogger.error("Cannot image drive while mounted, unmount first.")
         return 1
-    
+
     try:
         if sdcard.resize_drive() == 1:
             return 1
@@ -118,18 +118,18 @@ def main(argv):
         except PermissionError as e:
             rootLogger.error("Resize error, exiting: {}".format(e))
             return 1
-  
+
   if platform.system() != "Linux":
       rootLogger.error("Retropie builder does not support mounting, resizing, or copying roms on systems other than Linux")
       return 1
-  
+
   if (args.e_flag & EF_IGNORE_MOUNTS) != EF_IGNORE_MOUNTS:
     try:
         sdcard.mount()
     except RuntimeError as e:
         print(e)
         return 1
-  
+
   if (args.e_flag & EF_INSTALL_ROMS) == EF_INSTALL_ROMS:
     if emulators is None:
       rootLogger.warning("Attempted to install roms with no roms in config.")
@@ -137,11 +137,11 @@ def main(argv):
       for emulator in emulators:
         emulator.download(sdcard.tmp_dir)
         emulator.decompress_all(sdcard.tmp_dir)
-        emulator.cp_to_sd(sdcard.tmp_dir, sdcard.mount_root)
-  
+        emulator.cp_to_sd(sdcard.tmp_dir, sdcard.mount_root) # probably need to handle space on sd also
+
   if (args.e_flag & EF_IGNORE_MOUNTS) != EF_IGNORE_MOUNTS:
     sdcard.umount()
-  
+
     #sdcard.rm_dirs() # always remove temp dirs... however what about when we dont want to rm roms? TODO
 ''' TODO
     handle more errors

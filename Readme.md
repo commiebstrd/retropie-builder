@@ -87,6 +87,7 @@ This will result in a slower process though.
 
 |Objective |Status |Remainder|
 |-----|-----|-----|
+|Rom links |Done |50/63 have active links, some have urls to sets or folders |
 |Image SDcard |Done | |
 |Expand Partitions |Done |Linux only, until window and osx support ext4|
 |Download from config |Done |urllib supported links can be downloaded |

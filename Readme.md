@@ -6,7 +6,8 @@
 
 * [Introduction](Readme.md#introduction)
 * [Using Retropie-Builder](Readme.md#using-retropie-builder)
-  * [Windows & OSX](Readme.md#windows-and-osx)
+  * [Windows](Readme.md#windows)
+  * [OSX](Readme.md#osx)
   * [Linux](Readme.md#linux)
   * [Retropie](Readme.md#retropie)
 * [Current State](Readme.md#current-state)
@@ -38,7 +39,7 @@ for further processing on that device.
 
 UNTESTED, I don't use Windows, although as suggested above some support is
 expected. This is likely very broken as I'll need to address the underlying
-windows differences to disk access and mounting. Feel free to send pull requests!
+windows differences to raw disk access. Feel free to send pull requests!
 
 #### OSX
 
@@ -47,14 +48,19 @@ support, so we can only burn an image to sdcards. You should expect to see an
 exit message indicating that no further processing can be done on osx once this
 is completed.
 
-* Flags:
-  * Nothing
 * Config:
   * dev_path = /dev/disk2 - this should be the base device not a partition
-  * filesystem - leave unless building your own image
-  * expand - resize resulting second partition?
 
 #### Linux
+
+Linux is the main operating system intended to build a retropie. It's scary,
+but use sudo unless you run as root. If you have an sdcard with existing image
+various flags can be used to avoid mounting and reimaging.
+
+* Config:
+  * dev_path = /dev/sdc - this should be the base device not a partition
+  * filesystem - leave unless building your own image
+  * expand - resize resulting second partition?
 
 #### Retropie
 

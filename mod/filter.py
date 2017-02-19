@@ -1,5 +1,6 @@
 #!env python3
 
+import re
 from enum import Enum
 
 class Filters(Enum):
@@ -24,34 +25,35 @@ class Filters(Enum):
     Hack = re.compile("\[([hf][#\dCIR]*|hack)\\]")
     Alpha = re.compile("\(Alpha\)")
     Beta = re.compile("\(Beta\)")
-    Prototype = re.compile("\(Prototype\)")
+    Prototype = re.compile("\(Proto(type)?\)")
     Pre_release = re.compile("\(Pre-Release\)")
     Kiosks = re.compile("\(Kiosk")
     Multicart = re.compile("\(Menu\)")
     bios = re.compile("BIOS")
     Japan_Korea = re.compile("\(1\)") #
     NTSC = re.compile("\(4\)") #
-    Australia = re.compile("\(A\)") #
-    Japan = re.compile("\(J\)") #
-    Brazil = re.compile("\(B\)") #
-    Korea = re.compile("\(K\)")
-    China = re.compile("\(C\)")
+    Australia = re.compile("\(A(u(s(trailia)?)?)?\)") #
+    Japan = re.compile("\(J(ap(an)?)?\)") #
+    Brazil = re.compile("\(B(ra(zil)?)?\)") #
+    Korea = re.compile("\(K(or(ea)?)?\)")
+    China = re.compile("\(C(h(ina)?)?\)")
     Netherlands = re.compile("\(NL\)")
-    Europe = re.compile("\(E\)")
+    Europe = re.compile("\(E(u(r(ope)?)?)?\)")
     Public_Domain = re.compile("\(PD\)")
-    France = re.compile("\(F\)")
-    Spain = re.compile("\(S\)")
+    France = re.compile("\(F(r(ance)?)?\)")
+    Spain = re.compile("\(S(p(ain)?)?\)")
     French_Canadian = re.compile("\(FC\)")
     Sweden = re.compile("\(SW\)")
     Finland = re.compile("\(FN\)")
-    USA = re.compile("\(U\)")
-    Germany = re.compile("\(G\)")
+    USA = re.compile("\(Us?a?\)")
+    Germany = re.compile("\(G(er(many)?)?\)")
     England = re.compile("\(UK\)")
     Greece = re.compile("\(GR\)")
     Unknown = re.compile("\(Unk\)")
     Hong_Kong = re.compile("\(HK\)")
-    Italy = re.compile("\(I\)")
+    Italy = re.compile("\(I(t(aly)?)?\)")
     Holland = re.compile("\(H\)")
+    World = re.compile("\((W(orld)?)?\)")
     
     def check(self, rom):
         if self.value.search(rom):

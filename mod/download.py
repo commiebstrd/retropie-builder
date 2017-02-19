@@ -337,7 +337,7 @@ class Download():
     '''
     logging.debug("Filter() for {}".format(rom))
     for flr in self.filters:
-        if flr.search(rom, re.I):
+        if flr.value.search(rom, re.I):
             logging.info("Filter {} removes {}".format(flr.name, rom))
             return True
     return False

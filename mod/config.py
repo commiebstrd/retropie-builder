@@ -99,7 +99,7 @@ class Config():
                       uri=uri,
                       compressed=cmp,
                       md5=md5,
-                      filters=self.get_filters()
+                      filters=self.get_filters(),
                       file_order=f_o ))
           else:
             logger.error("invalid uri found: {} - {}".format(cmp,uri))
@@ -110,6 +110,9 @@ class Config():
   def get_filters(self):
     ret = list()
     for name, setting in self.filters.items():
-        flr = Filters.fromstring(name) if setting else continue
-        ret.append(lr)
+      if not setting:
+        continue
+      flr = Filters.fromstring(name)
+      if flr is not None:
+        ret.append(flr)
     return ret
